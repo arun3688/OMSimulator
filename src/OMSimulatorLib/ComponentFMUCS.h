@@ -109,6 +109,7 @@ namespace oms
     oms_status_enu_t setFaultInjection(const ComRef& signal, oms_fault_type_enu_t faultType, double faultValue);
 
     void getFilteredSignals(std::vector<Connector>& filteredSignals) const;
+    void getResourceFiles (std::string& file);
 
   protected:
     ComponentFMUCS(const ComRef& cref, System* parentSystem, const std::string& fmuPath);
@@ -133,7 +134,8 @@ namespace oms
     std::vector<Variable> parameters;
     std::vector<Variable> calculatedParameters;
     std::vector<bool> exportVariables;
-
+    std::vector<std::string> resourceFiles; ///<  list of resources files added via API oms_addResources()
+    std::vector<std::string> arun;
     Values values; ///< start values defined before instantiating the FMU and external inputs defined after initialization
 
     std::unordered_map<unsigned int /*result file var ID*/, unsigned int /*allVariables ID*/> resultFileMapping;

@@ -187,6 +187,8 @@ namespace oms
 
     void getFilteredSignals(std::vector<Connector>& filteredSignals) const;
 
+    std::vector<std::string> resourceFiles; ///<  list of resources files added via API oms_addResources()
+
   protected: // methods
     System(const ComRef& cref, oms_system_enu_t type, Model* parentModel, System* parentSystem, oms_solver_enu_t solverMethod);
 

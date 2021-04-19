@@ -215,6 +215,24 @@ oms_status_enu_t oms_list(const char* cref_, char** contents)
   return model->list(tail, contents);
 }
 
+oms_status_enu_t oms_addResources(const char* cref_)
+{
+  oms::ComRef tail(cref_);
+  oms::ComRef front = tail.pop_front();
+
+  oms::ComRef modelCref(front);
+  modelCref.pop_suffix();
+
+  oms::Model* model = oms::Scope::GetInstance().getModel(modelCref);
+  if (!model)
+    return logError_ModelNotInScope(front);
+
+  if (tail.isEmpty() && front.hasSuffix())
+    return model->addResources(oms::ComRef(":" + front.suffix()));
+
+  return model->addResources(tail);
+}
+
 oms_status_enu_t oms_exportSnapshot(const char* cref_, char** contents)
 {
   oms::ComRef tail(cref_);

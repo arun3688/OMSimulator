@@ -332,8 +332,25 @@ oms_status_enu_t oms::ComponentFMUCS::exportToSSD(pugi::xml_node& node, Snapshot
   {
     values.exportToSSD(node);
   }
+  else
+  {
+    std::cout << "\n ComponentFMUCS.cpp";
+    pugi::xml_node node_parameters_bindings = node.append_child(oms::ssp::Version1_0::ssd::parameter_bindings);
+    for (const auto& file : resourceFiles)
+    {
+      std::cout << "\n iterating component: " << file;
+      values.exportParameterBindings(node_parameters_bindings, file);
+    }
+  }
+
 
   return oms_status_ok;
+}
+
+void oms::ComponentFMUCS::getResourceFiles(std::string& file)
+{
+  std::cout << "\n Component GetResources : " << file;
+  resourceFiles.push_back(file);
 }
 
 oms_status_enu_t oms::ComponentFMUCS::exportToSSV(pugi::xml_node& ssvNode)

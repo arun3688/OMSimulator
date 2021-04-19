@@ -422,7 +422,13 @@ oms_status_enu_t oms::System::exportToSSD(pugi::xml_node& node, Snapshot& snapsh
   // export top level parameterBindings in ssv file
   else if (std::string(node.parent().name()) == oms::ssp::Draft20180219::ssd::system_structure_description)
   {
-    values.exportParameterBindings(node, parentModel->getCref());
+    pugi::xml_node node_parameters_bindings = node.append_child(oms::ssp::Version1_0::ssd::parameter_bindings);
+    values.exportParameterBindings(node_parameters_bindings, parentModel->getCref());
+    for (const auto& file: resourceFiles)
+    {
+      std::cout << "\n iterating resouces files : " << file;
+      values.exportParameterBindings(node_parameters_bindings, ComRef(file));
+    }
   }
 
   if (subelements.size() > 1)
