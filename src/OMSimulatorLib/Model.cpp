@@ -515,7 +515,7 @@ oms_status_enu_t oms::Model::addResources(const oms::ComRef& cref)
   {
     std::cout << "\n Found Component : " << component->getCref().c_str();
     component->getResourceFiles(suffix);
-    component->res().push_back(suffix);
+    //component->res().push_back(suffix);
   }
   return oms_status_ok;
 }
