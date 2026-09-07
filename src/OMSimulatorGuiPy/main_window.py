@@ -78,7 +78,7 @@ from OMSimulatorGui.models.system_tree_model import (
     KIND_SYSTEM,
     SystemTreeModel,
 )
-from OMSimulatorGui.views.diagram_canvas import DiagramView
+from OMSimulatorGui.views.diagram_canvas import DiagramView, connectorGeometryAt, defaultCanvasCenter, elementGeometryAt
 from OMSimulatorGui.views.system_tree_view import SystemTreeView
 
 
@@ -304,9 +304,19 @@ class MainWindow(QMainWindow):
     can render the root system as a single box (with its own ports) the same
     way it renders any other element. Rebuilt whenever the SSP is (re)loaded;
     edits to rootSystem's own contents are visible through it automatically
-    since the proxy delegates to the same live object.'''
+    since the proxy delegates to the same live object.
+
+    The proxy starts centered on the default canvas rather than left at its
+    initial elementgeometry=None, which would otherwise fall into the
+    fallback grid layout's top-left starting slot -- same as any other
+    element without a position of its own, just centered instead of
+    corner-anchored since this is the one box shown alone at this level.
+    Purely a starting point: dragging it (session-local, see the proxy's own
+    docstring) overrides this like any other elementgeometry.'''
     wrapper = System(str(rootSystem.name))
-    wrapper.elements = {str(rootSystem.name): _RootBoxProxy(rootSystem)}
+    proxy = _RootBoxProxy(rootSystem)
+    proxy.elementgeometry = elementGeometryAt(defaultCanvasCenter())
+    wrapper.elements = {str(rootSystem.name): proxy}
     return wrapper
 
   # --- Shared refresh after any edit -----------------------------------------
@@ -430,13 +440,25 @@ class MainWindow(QMainWindow):
                              'Double-click into the root system first, then add to its contents.')
     return False
 
+  def _positionNewElement(self, name: str, scenePos) -> None:
+    '''Places a canvas-added system/component at the cursor's scene position
+    instead of leaving it for the fallback grid layout, which always fills
+    from the top-left corner regardless of where the user actually
+    right-clicked. Only called for canvas-triggered adds (scenePos is only
+    ever non-None there), where self._diagramStack[-1][0] is exactly the
+    system path addressed -- the same one the element was just added to.'''
+    system = self._diagramStack[-1][0]
+    element = system.elements.get(CRef(name))
+    if element is not None:
+      element.elementgeometry = elementGeometryAt(scenePos)
+
   def _onAddSystemRequested(self, node) -> None:
     self._addSystemAtPath(self._crefPath(node))
 
-  def _onCanvasAddSystemRequested(self) -> None:
-    self._addSystemAtPath(self._diagramLevelPath())
+  def _onCanvasAddSystemRequested(self, scenePos) -> None:
+    self._addSystemAtPath(self._diagramLevelPath(), scenePos)
 
-  def _addSystemAtPath(self, path: list[str]) -> None:
+  def _addSystemAtPath(self, path: list[str], scenePos=None) -> None:
     if not self._requireNonEmptyPath(path):
       return
     dialog = AddSystemDialog(self)
@@ -452,6 +474,8 @@ class MainWindow(QMainWindow):
       path = [*path]
       path[0] = self._ssp.activeVariant.name
       self._ssp.addSystem(CRef(*path, dialog.name()))
+      if scenePos is not None:
+        self._positionNewElement(dialog.name(), scenePos)
     except Exception as e:
       QMessageBox.critical(self, 'Add System failed', str(e))
       return
@@ -460,10 +484,10 @@ class MainWindow(QMainWindow):
   def _onAddComponentRequested(self, node) -> None:
     self._addComponentAtPath(self._crefPath(node))
 
-  def _onCanvasAddComponentRequested(self) -> None:
-    self._addComponentAtPath(self._diagramLevelPath())
+  def _onCanvasAddComponentRequested(self, scenePos) -> None:
+    self._addComponentAtPath(self._diagramLevelPath(), scenePos)
 
-  def _addComponentAtPath(self, path: list[str]) -> None:
+  def _addComponentAtPath(self, path: list[str], scenePos=None) -> None:
     if not self._requireNonEmptyPath(path):
       return
     dialog = AddSubModelDialog(self)
@@ -474,6 +498,8 @@ class MainWindow(QMainWindow):
       if resourceName not in self._ssp.resources:
         self._ssp.addResource(dialog.fmuPath())
       self._ssp.addComponent(CRef(*path, dialog.name()), resourceName)
+      if scenePos is not None:
+        self._positionNewElement(dialog.name(), scenePos)
     except Exception as e:
       QMessageBox.critical(self, 'Add Component failed', str(e))
       return
@@ -482,10 +508,10 @@ class MainWindow(QMainWindow):
   def _onAddConnectorRequested(self, node) -> None:
     self._addConnectorAtPath(self._crefPath(node))
 
-  def _onCanvasAddConnectorRequested(self) -> None:
-    self._addConnectorAtPath(self._diagramLevelPath())
+  def _onCanvasAddConnectorRequested(self, scenePos) -> None:
+    self._addConnectorAtPath(self._diagramLevelPath(), scenePos)
 
-  def _addConnectorAtPath(self, path: list[str]) -> None:
+  def _addConnectorAtPath(self, path: list[str], scenePos=None) -> None:
     if not self._requireNonEmptyPath(path):
       return
     dialog = AddConnectorDialog(self)
@@ -493,6 +519,10 @@ class MainWindow(QMainWindow):
       return
     try:
       connector = Connector(dialog.name(), dialog.causality(), dialog.signalType())
+      if scenePos is not None:
+        boundaryRect = self._diagramView.boundaryRectInScene()
+        if boundaryRect is not None:
+          connector.connectorGeometry = connectorGeometryAt(scenePos, boundaryRect)
       self._ssp.addConnector(CRef(*path), connector)
     except Exception as e:
       QMessageBox.critical(self, 'Add Connector failed', str(e))

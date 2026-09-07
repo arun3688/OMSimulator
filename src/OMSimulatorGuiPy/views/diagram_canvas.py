@@ -93,6 +93,39 @@ def _assignFallbackConnectorGeometry(connectors) -> None:
         connector.connectorGeometry = ConnectorGeometry(x=x, y=(index + 1) / (count + 1))
 
 
+def elementGeometryAt(scenePos: QPointF, width: float = _FALLBACK_ELEMENT_W,
+                       height: float = _FALLBACK_ELEMENT_H) -> ElementGeometry:
+  '''Builds an ElementGeometry (SSD Y-up) for a new element centered at
+  scenePos (Qt Y-down scene coordinates) -- lets a canvas-added system or
+  component land under the cursor instead of wherever the fallback grid
+  layout would next place it (which always fills from the top-left corner,
+  regardless of where on the canvas the user actually right-clicked).'''
+  halfW, halfH = width / 2.0, height / 2.0
+  return ElementGeometry(
+      x1=scenePos.x() - halfW, x2=scenePos.x() + halfW,
+      y1=-scenePos.y() - halfH, y2=-scenePos.y() + halfH)
+
+
+def defaultCanvasCenter() -> QPointF:
+  '''Scene-space center of the default (un-expanded) canvas -- used to
+  center the root system's own box at the model level (MainWindow's
+  _makeModelWrapper), since it otherwise has no elementgeometry of its own
+  and would fall into the fallback grid layout's top-left starting slot.'''
+  return QPointF(_DEFAULT_CANVAS_WIDTH / 2.0, _DEFAULT_CANVAS_HEIGHT / 2.0)
+
+
+def connectorGeometryAt(scenePos: QPointF, boundaryRect: QRectF) -> ConnectorGeometry:
+  '''Builds a ConnectorGeometry -- fractional [0,1] within the system's own
+  boundary, Y-up per PortItem's own convention (y=1 is the boundary's top
+  edge) -- from a click's scene position, clamped to the boundary. Same
+  "land under the cursor" reasoning as elementGeometryAt.'''
+  if boundaryRect.width() <= 0 or boundaryRect.height() <= 0:
+    return ConnectorGeometry(x=0.5, y=0.5)
+  x = (scenePos.x() - boundaryRect.left()) / boundaryRect.width()
+  y = 1.0 - (scenePos.y() - boundaryRect.top()) / boundaryRect.height()
+  return ConnectorGeometry(x=min(1.0, max(0.0, x)), y=min(1.0, max(0.0, y)))
+
+
 _GRID_SPACING = 10.0
 _GRID_COLOR = QColor(225, 225, 225)
 _CANVAS_BORDER_COLOR = QColor(160, 160, 160)
@@ -171,9 +204,21 @@ class DiagramScene(QGraphicsScene):
       self.addItem(item)
       self._elementItems[str(name)] = item
 
-    union = rects[0] if rects else QRectF(0, 0, 200, 200)
-    for rect in rects[1:]:
-      union = union.united(rect)
+    if rects:
+      union = rects[0]
+      for rect in rects[1:]:
+        union = union.united(rect)
+    else:
+      # No elements yet, only (maybe) top-level connectors: anchor the
+      # fallback union to the canvas center -- the old plain QRectF(0, 0,
+      # 200, 200) here predates the bounded-canvas work and is unrelated to
+      # it, so the resulting boundaryRect below could land partly outside
+      # the visible canvas (e.g. its left/top edge going negative once
+      # -_BOUNDARY_MARGIN is applied), putting a fallback-positioned
+      # connector outside the canvas on the very first add.
+      center = defaultCanvasCenter()
+      union = QRectF(center.x() - _FALLBACK_ELEMENT_W / 2.0, center.y() - _FALLBACK_ELEMENT_H / 2.0,
+                      _FALLBACK_ELEMENT_W, _FALLBACK_ELEMENT_H)
 
     if system.connectors:
       _assignFallbackConnectorGeometry(system.connectors)
@@ -188,19 +233,30 @@ class DiagramScene(QGraphicsScene):
       if startPos is not None and endPos is not None:
         self.addItem(ConnectionItem(connection, startPos, endPos, onMoved=self._onElementMoved))
 
-    if rects:
+    if rects or self._boundaryItem is not None:
       # Union with the raw (unpadded) content first -- padding it before
       # comparing against the origin-anchored default would push even a
       # single small, comfortably-contained element's rect corner just
       # negative, making the canvas falsely "expand" for content that never
       # actually needed more room. Only pad afterwards, and only along
-      # whichever edges the union actually grew past.
+      # whichever edges the union actually grew past. Includes the boundary
+      # (already folded into `union` above) even when there are no elements,
+      # so a system's own connectors always stay inside the canvas too.
       grown = self._canvasRect.united(union)
       if grown != self._canvasRect:
         grown.adjust(-_CANVAS_MARGIN, -_CANVAS_MARGIN, _CANVAS_MARGIN, _CANVAS_MARGIN)
       self._canvasRect = grown
 
     self.setSceneRect(self.itemsBoundingRect().united(self._canvasRect).adjusted(-40, -40, 40, 40))
+
+  def boundaryRectInScene(self) -> QRectF | None:
+    '''The current system's own boundary rect in scene coordinates, or None
+    if it doesn't have one yet (no top-level connectors) -- used to place a
+    canvas-added connector's fractional [0,1] position under the cursor.'''
+    if self._boundaryItem is None:
+      return None
+    rect = self._boundaryItem.rect()
+    return QRectF(self._boundaryItem.pos(), rect.size())
 
   def _resolvePortPos(self, elementName, connectorName):
     elementName = str(elementName)
@@ -241,9 +297,12 @@ class DiagramView(QGraphicsView):
   systemDrillDownRequested = Signal(object, str)
   connectionRequested = Signal(str, str, str, str)       # elem1, conn1, elem2, conn2
   connectionDeleteRequested = Signal(str, str, str, str)  # elem1, conn1, elem2, conn2
-  addSystemRequested = Signal()     # right-click on empty canvas -- adds to the level shown here
-  addComponentRequested = Signal()
-  addConnectorRequested = Signal()
+  # Right-click on empty canvas -- adds to the level shown here, at the
+  # click's own scene position (see MainWindow's _addSystemAtPath and co.)
+  # rather than wherever the fallback grid layout would otherwise put it.
+  addSystemRequested = Signal(QPointF)
+  addComponentRequested = Signal(QPointF)
+  addConnectorRequested = Signal(QPointF)
   elementPropertiesRequested = Signal(object)  # Component: double-clicked on the canvas
 
   def __init__(self, parent=None):
@@ -289,6 +348,9 @@ class DiagramView(QGraphicsView):
       self._hasFitCurrentLevel = False
       if not self._fitIfNeeded():
         QTimer.singleShot(0, self._fitIfNeeded)
+
+  def boundaryRectInScene(self) -> QRectF | None:
+    return self._scene.boundaryRectInScene()
 
   def _fitIfNeeded(self) -> bool:
     if self._hasFitCurrentLevel:
@@ -437,17 +499,18 @@ class DiagramView(QGraphicsView):
       # dashed SystemBoundaryItem covers the whole scene, so a right-click
       # anywhere inside it (not just where nothing is drawn at all) counts
       # as "empty canvas" too.
+      clickScenePos = self.mapToScene(event.pos())
       menu = QMenu(self)
       addSystemAction = menu.addAction('Add System...')
       addComponentAction = menu.addAction('Add Component...')
       addConnectorAction = menu.addAction('Add Connector...')
       chosen = menu.exec(event.globalPos())
       if chosen == addSystemAction:
-        self.addSystemRequested.emit()
+        self.addSystemRequested.emit(clickScenePos)
       elif chosen == addComponentAction:
-        self.addComponentRequested.emit()
+        self.addComponentRequested.emit(clickScenePos)
       elif chosen == addConnectorAction:
-        self.addConnectorRequested.emit()
+        self.addConnectorRequested.emit(clickScenePos)
       return
 
     super().contextMenuEvent(event)
