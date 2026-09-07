@@ -54,6 +54,7 @@ class SystemTreeView(QTreeView):
   addConnectorRequested = Signal(object)  # TreeNode: parent system to add into
   deleteRequested = Signal(object)        # TreeNode: element/connector to delete
   renameRequested = Signal(object)        # TreeNode: element to rename
+  propertiesRequested = Signal(object)    # TreeNode: FMU component to show properties for
 
   def __init__(self, parent=None):
     super().__init__(parent)
@@ -62,6 +63,12 @@ class SystemTreeView(QTreeView):
     self.setExpandsOnDoubleClick(True)
     self.setContextMenuPolicy(self.contextMenuPolicy().CustomContextMenu)
     self.customContextMenuRequested.connect(self._onContextMenuRequested)
+    self.doubleClicked.connect(self._onDoubleClicked)
+
+  def _onDoubleClicked(self, index) -> None:
+    node = self.model().nodeFromIndex(index)
+    if node is not None and node.kind == KIND_COMPONENT:
+      self.propertiesRequested.emit(node)
 
   def _onContextMenuRequested(self, pos) -> None:
     index = self.indexAt(pos)
@@ -82,6 +89,9 @@ class SystemTreeView(QTreeView):
       deleteAction = menu.addAction('Delete', lambda: self.deleteRequested.emit(node))
       deleteAction.setEnabled(not self.model().isTopLevelSystem(node))
     elif node.kind in (KIND_COMPONENT, KIND_COMPONENT_TABLE):
+      if node.kind == KIND_COMPONENT:
+        menu.addAction('Properties...', lambda: self.propertiesRequested.emit(node))
+        menu.addSeparator()
       menu.addAction('Rename...', lambda: self.renameRequested.emit(node))
       menu.addAction('Delete', lambda: self.deleteRequested.emit(node))
     elif node.kind == KIND_CONNECTOR:

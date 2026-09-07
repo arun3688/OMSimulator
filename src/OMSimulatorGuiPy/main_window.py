@@ -49,6 +49,7 @@ was built from).
 
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -67,6 +68,8 @@ from OMSimulatorGui.dialogs.add_connector_dialog import AddConnectorDialog
 from OMSimulatorGui.dialogs.add_submodel_dialog import AddSubModelDialog
 from OMSimulatorGui.dialogs.add_system_dialog import AddSystemDialog
 from OMSimulatorGui.dialogs.create_model_dialog import CreateModelDialog
+from OMSimulatorGui.dialogs.element_properties_dialog import ElementPropertiesDialog
+from OMSimulatorGui.dialogs.simulation_settings_dialog import SimulationSettingsDialog
 from OMSimulatorGui.models.system_tree_model import (
     KIND_COMPONENT,
     KIND_COMPONENT_TABLE,
@@ -139,6 +142,7 @@ class MainWindow(QMainWindow):
     self._treeView.addConnectorRequested.connect(self._onAddConnectorRequested)
     self._treeView.deleteRequested.connect(self._onDeleteRequested)
     self._treeView.renameRequested.connect(self._onRenameRequested)
+    self._treeView.propertiesRequested.connect(self._onPropertiesRequested)
 
     self._diagramView = DiagramView(self)
     self._diagramView.systemDrillDownRequested.connect(self._onDrillDownRequested)
@@ -147,6 +151,24 @@ class MainWindow(QMainWindow):
     self._diagramView.addSystemRequested.connect(self._onCanvasAddSystemRequested)
     self._diagramView.addComponentRequested.connect(self._onCanvasAddComponentRequested)
     self._diagramView.addConnectorRequested.connect(self._onCanvasAddConnectorRequested)
+    self._diagramView.elementPropertiesRequested.connect(self._onCanvasPropertiesRequested)
+    # Fits/centers the empty default canvas immediately -- without this,
+    # DiagramView.setSystem() (the only place that ever calls setSceneRect
+    # and fitInView) never runs until a model is actually loaded, so the
+    # blank canvas would sit wherever Qt's unfit default transform happens to
+    # place it instead of centered in the view.
+    #
+    # Must be deferred, not called inline: at this point in __init__ the view
+    # isn't parented into any layout yet, so its viewport reports Qt's tiny
+    # pre-layout default size -- nonzero, so _fitIfNeeded's own "not sized
+    # yet" guard (which only checks .isEmpty()) doesn't catch it, and it
+    # happily "succeeds" against that wrong tiny size. Once _hasFitCurrentLevel
+    # is set, _fitIfNeeded never retries, so that undersized fit would stick
+    # even after the window reaches its real size. Deferring via
+    # QTimer.singleShot(0, ...) runs this after the window construction below
+    # has finished and the caller's show() has run, so the *first* fit
+    # attempt already sees the real viewport.
+    QTimer.singleShot(0, lambda: self._diagramView.setSystem(None))
 
     splitter = QSplitter(self)
     splitter.addWidget(self._treeView)
@@ -190,6 +212,10 @@ class MainWindow(QMainWindow):
     exitAction = fileMenu.addAction('E&xit')
     exitAction.setShortcut('Ctrl+Q')
     exitAction.triggered.connect(self.close)
+
+    modelMenu = self.menuBar().addMenu('&Model')
+    simulationSettingsAction = modelMenu.addAction('&Simulation Settings...')
+    simulationSettingsAction.triggered.connect(self._onSimulationSettingsTriggered)
 
   # --- File actions ----------------------------------------------------------
 
@@ -495,3 +521,30 @@ class MainWindow(QMainWindow):
       QMessageBox.critical(self, 'Rename failed', str(e))
       return
     self._onModelChanged()
+
+  def _onPropertiesRequested(self, node) -> None:
+    self._showElementProperties(node.obj)
+
+  def _onCanvasPropertiesRequested(self, component) -> None:
+    self._showElementProperties(component)
+
+  def _showElementProperties(self, component) -> None:
+    dialog = ElementPropertiesDialog(component, self)
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+      self._onModelChanged()
+
+  # --- Simulation settings -----------------------------------------------------
+
+  def _onSimulationSettingsTriggered(self) -> None:
+    if self._ssp is None:
+      QMessageBox.information(self, 'No model', 'Create or open a model first.')
+      return
+    ssd = self._ssp.activeVariant
+    dialog = SimulationSettingsDialog(ssd, self)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+      return
+    ssd.startTime = dialog.startTime()
+    ssd.stopTime = dialog.stopTime()
+    ssd.tolerance = dialog.tolerance()
+    ssd.maximumStepSize = dialog.stepSize()
+    ssd.resultFile = dialog.resultFile()
