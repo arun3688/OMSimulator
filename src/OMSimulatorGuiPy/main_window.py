@@ -71,11 +71,39 @@ from OMSimulatorGui.models.system_tree_model import (
     KIND_COMPONENT,
     KIND_COMPONENT_TABLE,
     KIND_CONNECTOR,
+    KIND_MODEL,
     KIND_SYSTEM,
     SystemTreeModel,
 )
 from OMSimulatorGui.views.diagram_canvas import DiagramView
 from OMSimulatorGui.views.system_tree_view import SystemTreeView
+
+
+class _RootBoxProxy:
+  '''Represents the real root System as a single box at the model level,
+  without writing its position/size into the real System's own
+  elementgeometry -- a root system has no parent to be positioned within,
+  so doing that would leak a meaningless <ssd:ElementGeometry> onto the
+  <ssd:System> root element itself when the file is exported. The box's
+  position/size lives on the proxy instead (session-local: it resets to a
+  fallback layout on the next file open, since it was never real data to
+  begin with).
+
+  DiagramView resolves double-clicks on a box back to the real system via
+  duck-typing (`getattr(item.element, 'system', item.element)`), so this
+  needs no special-casing anywhere else.'''
+
+  def __init__(self, system: System):
+    self.system = system
+    self.elementgeometry = None
+
+  @property
+  def name(self):
+    return self.system.name
+
+  @property
+  def connectors(self):
+    return self.system.connectors
 
 
 class MainWindow(QMainWindow):
@@ -97,7 +125,15 @@ class MainWindow(QMainWindow):
     self._treeModel = SystemTreeModel(self)
     self._treeView = SystemTreeView(self)
     self._treeView.setModel(self._treeModel)
-    self._treeView.selectionModel().currentChanged.connect(self._onTreeSelectionChanged)
+    # `clicked` (not `currentChanged`) deliberately: currentChanged fires for
+    # ANY current-index change, including Qt's own internal bookkeeping --
+    # e.g. QTreeView silently auto-selecting row 0 the first time it becomes
+    # visible with no explicit selection, sometimes deferred until the next
+    # time Qt processes events (which can coincide with an unrelated
+    # interaction, like starting a canvas drag) -- which would otherwise
+    # reset the diagram's navigation out from under the user. `clicked` only
+    # fires for a genuine user mouse click on a row.
+    self._treeView.clicked.connect(self._onTreeItemClicked)
     self._treeView.addSystemRequested.connect(self._onAddSystemRequested)
     self._treeView.addComponentRequested.connect(self._onAddComponentRequested)
     self._treeView.addConnectorRequested.connect(self._onAddConnectorRequested)
@@ -108,6 +144,9 @@ class MainWindow(QMainWindow):
     self._diagramView.systemDrillDownRequested.connect(self._onDrillDownRequested)
     self._diagramView.connectionRequested.connect(self._onConnectionRequested)
     self._diagramView.connectionDeleteRequested.connect(self._onConnectionDeleteRequested)
+    self._diagramView.addSystemRequested.connect(self._onCanvasAddSystemRequested)
+    self._diagramView.addComponentRequested.connect(self._onCanvasAddComponentRequested)
+    self._diagramView.addConnectorRequested.connect(self._onCanvasAddConnectorRequested)
 
     splitter = QSplitter(self)
     splitter.addWidget(self._treeView)
@@ -234,14 +273,14 @@ class MainWindow(QMainWindow):
 
   @staticmethod
   def _makeModelWrapper(rootSystem: System) -> System:
-    '''A throwaway System whose only "element" is the real root system --
-    never exported, purely so DiagramScene.setSystem() can render the root
-    system as a single box (with its own ports) the same way it renders any
-    other element. Rebuilt whenever the SSP is (re)loaded; edits to
-    rootSystem's own contents are visible through it automatically since
-    it's the same live object, just referenced from the wrapper's elements.'''
+    '''A throwaway System whose only "element" is a _RootBoxProxy wrapping
+    the real root system -- never exported, purely so DiagramScene.setSystem()
+    can render the root system as a single box (with its own ports) the same
+    way it renders any other element. Rebuilt whenever the SSP is (re)loaded;
+    edits to rootSystem's own contents are visible through it automatically
+    since the proxy delegates to the same live object.'''
     wrapper = System(str(rootSystem.name))
-    wrapper.elements = {str(rootSystem.name): rootSystem}
+    wrapper.elements = {str(rootSystem.name): _RootBoxProxy(rootSystem)}
     return wrapper
 
   # --- Shared refresh after any edit -----------------------------------------
@@ -300,13 +339,23 @@ class MainWindow(QMainWindow):
       return
     self._onModelChanged()
 
-  def _onTreeSelectionChanged(self, current, _previous) -> None:
-    '''Clicking a system node in the tree navigates the diagram to it,
-    rebuilding the breadcrumb from the node's ancestor chain (prefixed with
-    the synthetic model level, matching what drilling down through the
-    canvas itself would produce).'''
-    node = self._treeModel.nodeFromIndex(current)
-    if node is None or node.kind != KIND_SYSTEM:
+  def _onTreeItemClicked(self, index) -> None:
+    '''Clicking a tree item navigates the diagram to show that item *in
+    context* -- as a box at its parent's level -- rather than drilling into
+    its own contents (that's what double-clicking its box on the canvas is
+    for). So clicking the model row or the root system both land on the
+    model level (where the root system appears as a box); clicking a nested
+    system lands one level up, wherever its own box lives.'''
+    node = self._treeModel.nodeFromIndex(index)
+    if node is None:
+      return
+
+    if node.kind == KIND_MODEL:
+      self._diagramStack = [(self._modelWrapperSystem, self._modelName)]
+      self._updateDiagram()
+      return
+
+    if node.kind != KIND_SYSTEM:
       return
 
     path: list[tuple[System, str]] = []
@@ -316,7 +365,8 @@ class MainWindow(QMainWindow):
       n = n.parent
     path.reverse()
 
-    self._diagramStack = [(self._modelWrapperSystem, self._modelName), *path]
+    parentPath = path[:-1]  # show the clicked system itself, not its insides
+    self._diagramStack = [(self._modelWrapperSystem, self._modelName), *parentPath]
     self._updateDiagram()
 
   # --- Structured editing ------------------------------------------------------
@@ -342,7 +392,27 @@ class MainWindow(QMainWindow):
       return self._crefPath(node.parent.parent) + [str(node.obj.name)]
     raise ValueError(f'Cannot build a path for node kind {node.kind!r}')
 
+  def _requireNonEmptyPath(self, path: list[str]) -> bool:
+    '''Right-clicking empty canvas at the model level (viewing the root
+    system as a box, before drilling into it) has no valid container to add
+    into -- _diagramLevelPath() is empty there by design (the model level
+    isn't a real, addressable system). Tree-triggered calls never hit this,
+    since _crefPath always includes at least the root system's own name.'''
+    if path:
+      return True
+    QMessageBox.information(self, 'Nothing to add to',
+                             'Double-click into the root system first, then add to its contents.')
+    return False
+
   def _onAddSystemRequested(self, node) -> None:
+    self._addSystemAtPath(self._crefPath(node))
+
+  def _onCanvasAddSystemRequested(self) -> None:
+    self._addSystemAtPath(self._diagramLevelPath())
+
+  def _addSystemAtPath(self, path: list[str]) -> None:
+    if not self._requireNonEmptyPath(path):
+      return
     dialog = AddSystemDialog(self)
     if dialog.exec() != QDialog.DialogCode.Accepted:
       return
@@ -353,7 +423,7 @@ class MainWindow(QMainWindow):
       # validate via _validateCref against self.system.name. Substitute the
       # variant name for the first segment so this still works even when the
       # root system has been renamed away from the variant name.
-      path = self._crefPath(node)
+      path = [*path]
       path[0] = self._ssp.activeVariant.name
       self._ssp.addSystem(CRef(*path, dialog.name()))
     except Exception as e:
@@ -362,6 +432,14 @@ class MainWindow(QMainWindow):
     self._onModelChanged()
 
   def _onAddComponentRequested(self, node) -> None:
+    self._addComponentAtPath(self._crefPath(node))
+
+  def _onCanvasAddComponentRequested(self) -> None:
+    self._addComponentAtPath(self._diagramLevelPath())
+
+  def _addComponentAtPath(self, path: list[str]) -> None:
+    if not self._requireNonEmptyPath(path):
+      return
     dialog = AddSubModelDialog(self)
     if dialog.exec() != QDialog.DialogCode.Accepted:
       return
@@ -369,19 +447,27 @@ class MainWindow(QMainWindow):
       resourceName = f'resources/{Path(dialog.fmuPath()).name}'
       if resourceName not in self._ssp.resources:
         self._ssp.addResource(dialog.fmuPath())
-      self._ssp.addComponent(CRef(*self._crefPath(node), dialog.name()), resourceName)
+      self._ssp.addComponent(CRef(*path, dialog.name()), resourceName)
     except Exception as e:
       QMessageBox.critical(self, 'Add Component failed', str(e))
       return
     self._onModelChanged()
 
   def _onAddConnectorRequested(self, node) -> None:
+    self._addConnectorAtPath(self._crefPath(node))
+
+  def _onCanvasAddConnectorRequested(self) -> None:
+    self._addConnectorAtPath(self._diagramLevelPath())
+
+  def _addConnectorAtPath(self, path: list[str]) -> None:
+    if not self._requireNonEmptyPath(path):
+      return
     dialog = AddConnectorDialog(self)
     if dialog.exec() != QDialog.DialogCode.Accepted:
       return
     try:
       connector = Connector(dialog.name(), dialog.causality(), dialog.signalType())
-      self._ssp.addConnector(CRef(*self._crefPath(node)), connector)
+      self._ssp.addConnector(CRef(*path), connector)
     except Exception as e:
       QMessageBox.critical(self, 'Add Connector failed', str(e))
       return

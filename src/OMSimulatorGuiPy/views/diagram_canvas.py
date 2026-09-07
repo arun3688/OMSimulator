@@ -46,7 +46,7 @@ user edit, and it's purely a position, not a structural change.
 
 from collections import defaultdict
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsLineItem, QGraphicsScene, QGraphicsView, QMenu
 
@@ -58,11 +58,11 @@ from OMSimulator.variable import Causality
 from OMSimulatorGui.views.diagram_items import ConnectionItem, ElementIconItem, PortItem, SystemBoundaryItem, geometryToSceneRect
 
 _FALLBACK_COLS = 4
-_FALLBACK_CELL_W = 130.0
-_FALLBACK_CELL_H = 100.0
-_FALLBACK_ELEMENT_W = 90.0
-_FALLBACK_ELEMENT_H = 60.0
-_BOUNDARY_MARGIN = 60.0
+_FALLBACK_CELL_W = 80.0
+_FALLBACK_CELL_H = 60.0
+_FALLBACK_ELEMENT_W = 50.0
+_FALLBACK_ELEMENT_H = 35.0
+_BOUNDARY_MARGIN = 40.0
 
 
 def _assignFallbackConnectorGeometry(connectors) -> None:
@@ -180,6 +180,9 @@ class DiagramView(QGraphicsView):
   systemDrillDownRequested = Signal(object, str)
   connectionRequested = Signal(str, str, str, str)       # elem1, conn1, elem2, conn2
   connectionDeleteRequested = Signal(str, str, str, str)  # elem1, conn1, elem2, conn2
+  addSystemRequested = Signal()     # right-click on empty canvas -- adds to the level shown here
+  addComponentRequested = Signal()
+  addConnectorRequested = Signal()
 
   def __init__(self, parent=None):
     super().__init__(parent)
@@ -192,22 +195,41 @@ class DiagramView(QGraphicsView):
     self._currentSystem: System | None = None
     self._connectDragPort: PortItem | None = None
     self._connectDragLine: QGraphicsLineItem | None = None
+    # True once fitInView has actually run for the level currently shown.
+    self._hasFitCurrentLevel = False
 
   def setSystem(self, system: System | None) -> None:
     '''Rebuilds the scene. Only re-fits the view when navigating to a
     different System (a fresh setSystem call after an edit to the SAME level
     -- e.g. from _onElementMoved or MainWindow's shared refresh -- must not
-    reset the user's current pan/zoom).'''
+    reset the user's current pan/zoom).
+
+    The retry-fit for "widget has no real size yet" is deferred via
+    QTimer.singleShot rather than hooked into resizeEvent. resizeEvent fires
+    for reasons that have nothing to do with the widget's own on-screen size
+    changing -- e.g. a scene-rect change (from a drag moving an item far
+    enough to toggle scrollbar visibility) can trigger a genuine viewport
+    resizeEvent -- and re-fitting there would silently re-center the whole
+    view, undoing the drag's visual effect (the committed geometry is
+    unaffected, only the camera snaps back). Deferring via the event loop
+    instead ties the retry purely to "give layout a chance to finish",
+    with no dependency on resize events at all.'''
     isNewLevel = system is not self._currentSystem
     self._currentSystem = system
     self._scene.setSystem(system)
-    if isNewLevel and not self._scene.sceneRect().isEmpty():
-      self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+    if isNewLevel:
+      self._hasFitCurrentLevel = False
+      if not self._fitIfNeeded():
+        QTimer.singleShot(0, self._fitIfNeeded)
 
-  def resizeEvent(self, event) -> None:
-    super().resizeEvent(event)
-    if not self._scene.sceneRect().isEmpty():
-      self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+  def _fitIfNeeded(self) -> bool:
+    if self._hasFitCurrentLevel:
+      return True
+    if self._scene.sceneRect().isEmpty() or self.viewport().rect().isEmpty():
+      return False
+    self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+    self._hasFitCurrentLevel = True
+    return True
 
   def wheelEvent(self, event) -> None:
     factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
@@ -218,9 +240,14 @@ class DiagramView(QGraphicsView):
     while item is not None and not isinstance(item, ElementIconItem):
       item = item.parentItem()
 
-    if item is not None and isinstance(item.element, System):
-      self.systemDrillDownRequested.emit(item.element, item.name)
-      return
+    if item is not None:
+      # duck-typed: a plain System element resolves to itself; a
+      # _RootBoxProxy (the model-level "root system as a box" stand-in,
+      # see MainWindow) resolves to the real system it wraps.
+      target = getattr(item.element, 'system', item.element)
+      if isinstance(target, System):
+        self.systemDrillDownRequested.emit(target, item.name)
+        return
 
     super().mouseDoubleClickEvent(event)
 
@@ -278,4 +305,23 @@ class DiagramView(QGraphicsView):
             str(connection.startElement), str(connection.startConnector),
             str(connection.endElement), str(connection.endConnector))
       return
+
+    if item is None or isinstance(item, SystemBoundaryItem):
+      # Empty canvas: add to whatever level is currently shown here. The
+      # dashed SystemBoundaryItem covers the whole scene, so a right-click
+      # anywhere inside it (not just where nothing is drawn at all) counts
+      # as "empty canvas" too.
+      menu = QMenu(self)
+      addSystemAction = menu.addAction('Add System...')
+      addComponentAction = menu.addAction('Add Component...')
+      addConnectorAction = menu.addAction('Add Connector...')
+      chosen = menu.exec(event.globalPos())
+      if chosen == addSystemAction:
+        self.addSystemRequested.emit()
+      elif chosen == addComponentAction:
+        self.addComponentRequested.emit()
+      elif chosen == addConnectorAction:
+        self.addConnectorRequested.emit()
+      return
+
     super().contextMenuEvent(event)

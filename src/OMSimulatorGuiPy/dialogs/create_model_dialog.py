@@ -44,6 +44,7 @@ class CreateModelDialog(QDialog):
     self.setWindowTitle('SSP Model')
 
     self._modelNameEdit = QLineEdit(self)
+    self._modelNameEdit.setText('default')
 
     self._rootSystemNameEdit = QLineEdit(self)
     self._rootSystemNameEdit.setText('Root')

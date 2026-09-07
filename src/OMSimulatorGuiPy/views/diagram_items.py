@@ -44,12 +44,19 @@ ranges fine via fitInView, so no rescaling is needed here.
 '''
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QPainterPath, QPen
-from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsRectItem, QGraphicsSimpleTextItem
+from PySide6.QtGui import QBrush, QColor, QFont, QPainterPath, QPen, QPolygonF
+from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsSimpleTextItem
 
 from OMSimulator.variable import Causality
 
-PORT_RADIUS = 5.0
+PORT_SIZE = 3.0
+
+
+def _arrowPolygon(size: float) -> QPolygonF:
+  '''A small triangle pointing right (the Modelica.Blocks convention: input
+  ports on the left edge point into the icon, output ports on the right edge
+  point further out -- both rightward, distinguished by color).'''
+  return QPolygonF([QPointF(-size, -size), QPointF(size, 0.0), QPointF(-size, size)])
 
 CAUSALITY_COLORS = {
   Causality.input: QColor(60, 120, 220),
@@ -67,13 +74,15 @@ def geometryToSceneRect(geometry) -> QRectF:
   return QRectF(QPointF(left, top), QPointF(right, bottom))
 
 
-class PortItem(QGraphicsEllipseItem):
-  '''A connector port, positioned at connector.connectorGeometry.(x,y) --
-  relative [0,1] within `localRect` (the parent icon/boundary's own (0,0)..
-  (w,h) frame). y=1 is icon-top (Y-up convention), consistent with
-  geometryToSceneRect's flip. connector.connectorGeometry is always real by
-  construction time (DiagramScene spreads out fallback positions for
-  connectors that don't have one, so same-causality ports never collide).
+class PortItem(QGraphicsPolygonItem):
+  '''A connector port, drawn as a small right-pointing arrow (matching the
+  Modelica.Blocks connector icon convention) and positioned at
+  connector.connectorGeometry.(x,y) -- relative [0,1] within `localRect`
+  (the parent icon/boundary's own (0,0)..(w,h) frame). y=1 is icon-top
+  (Y-up convention), consistent with geometryToSceneRect's flip.
+  connector.connectorGeometry is always real by construction time
+  (DiagramScene spreads out fallback positions for connectors that don't
+  have one, so same-causality ports never collide).
 
   Draggable with Shift held (plain drag from a port means "start a
   connection" -- see DiagramView.mousePressEvent); dropping commits the new
@@ -84,7 +93,7 @@ class PortItem(QGraphicsEllipseItem):
   '''
 
   def __init__(self, connector, localRect: QRectF, parent: QGraphicsItem, onMoved=None):
-    super().__init__(-PORT_RADIUS, -PORT_RADIUS, 2 * PORT_RADIUS, 2 * PORT_RADIUS, parent)
+    super().__init__(_arrowPolygon(PORT_SIZE), parent)
     self.connector = connector
     self._localRect = localRect
     self._onMoved = onMoved
@@ -145,8 +154,8 @@ def _portScenePos(hostItem: QGraphicsItem, ports: dict, connectorName: str) -> Q
   return None if port is None else hostItem.mapToScene(port.pos())
 
 
-_RESIZE_MARGIN = 8.0
-_MIN_ICON_SIZE = 24.0
+_RESIZE_MARGIN = 4.0
+_MIN_ICON_SIZE = 15.0
 
 _EDGE_CURSORS = {
   ('left',): Qt.CursorShape.SizeHorCursor,
@@ -193,14 +202,20 @@ class ElementIconItem(QGraphicsRectItem):
 
     self.setBrush(QBrush(QColor(235, 238, 245)))
     self.setPen(QPen(QColor(90, 90, 90)))
-    self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+    # Deliberately not ItemIsSelectable: selection isn't used for anything in
+    # this app, and Qt's default behavior for movable+selectable items is to
+    # drag every currently-selected item together -- a stray rubber-band drag
+    # selecting two icons would then move both whenever either was dragged.
     self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
     self.setAcceptHoverEvents(True)
     self.setZValue(1)
     self.setToolTip(name)
 
     self._label = QGraphicsSimpleTextItem(name, self)
-    self._label.setPos(4, 4)
+    labelFont = QFont()
+    labelFont.setPointSizeF(6.5)
+    self._label.setFont(labelFont)
+    self._label.setPos(2, 1)
 
     self.ports = _createPorts(self, getattr(element, 'connectors', []), self.rect(), onMoved)
 
