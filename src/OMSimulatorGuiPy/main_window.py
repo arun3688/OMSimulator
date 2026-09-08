@@ -30,7 +30,7 @@
 #
 # See the full OSMC Public License conditions for more details.
 
-'''MainWindow: owns the one live SSP instance and wires it to the views.
+'''MainWindow: owns every open SSP instance and wires them to the views.
 
 M1: File > Open loads an existing .ssp and shows its root System in a
 read-only tree (the tree always shows the full nested hierarchy).
@@ -110,21 +110,41 @@ class _RootBoxProxy:
     return self.system.connectors
 
 
+class _OpenModel:
+  '''One open SSP and its own diagram-navigation state. Any number of these
+  can be open at once (see MainWindow._models) -- the tree shows one
+  top-level row per open model, and the single shared diagram canvas shows
+  whichever model's system the user last navigated to
+  (MainWindow._activeModel).'''
+
+  def __init__(self, ssp: SSP, name: str):
+    self.ssp = ssp
+    self.name = name
+    self.modelWrapperSystem: System | None = None
+    # Navigation stack for the diagram canvas only -- the tree always shows
+    # the full hierarchy; this is a list of (System, displayName) from the
+    # synthetic model level down to whatever level is currently shown on the
+    # canvas. Index 0 is always the model-level wrapper (see
+    # MainWindow._makeModelWrapper) and is excluded from cref paths -- see
+    # MainWindow._diagramLevelPath.
+    self.diagramStack: list[tuple[System, str]] = []
+
+
 class MainWindow(QMainWindow):
   def __init__(self, parent=None):
     super().__init__(parent)
     self.setWindowTitle('OMSimulatorGui')
     self.resize(1200, 800)
 
-    self._ssp: SSP | None = None
-    # Navigation stack for the diagram canvas only -- the tree always shows
-    # the full hierarchy; this is a list of (System, displayName) from the
-    # synthetic model level down to whatever level is currently shown on the
-    # canvas. Index 0 is always the model-level wrapper (see _makeModelWrapper)
-    # and is excluded from cref paths -- see _diagramLevelPath.
-    self._diagramStack: list[tuple[System, str]] = []
-    self._modelWrapperSystem: System | None = None
-    self._modelName = 'Model'
+    # Every open model (File > New/Open adds one, never replacing an
+    # existing entry -- see _addModel/_uniqueModelName), keyed by its own
+    # display name. self._activeModel is whichever one the tree/canvas are
+    # currently pointed at; self._ssp, self._diagramStack, etc. below are
+    # properties reading/writing through to it, so the bulk of this class
+    # can keep referring to "the current model" without carrying the
+    # distinction explicitly everywhere.
+    self._models: dict[str, _OpenModel] = {}
+    self._activeModel: _OpenModel | None = None
 
     self._treeModel = SystemTreeModel(self)
     self._treeView = SystemTreeView(self)
@@ -218,6 +238,70 @@ class MainWindow(QMainWindow):
     simulationSettingsAction = modelMenu.addAction('&Simulation Settings...')
     simulationSettingsAction.triggered.connect(self._onSimulationSettingsTriggered)
 
+  # --- Active-model properties -------------------------------------------------
+  # Thin accessors over self._activeModel, so the rest of this class can keep
+  # referring to "self._ssp"/"self._diagramStack" etc. as if there were only
+  # one model, while actually always meaning "the currently active one".
+
+  @property
+  def _ssp(self) -> SSP | None:
+    return self._activeModel.ssp if self._activeModel is not None else None
+
+  @property
+  def _modelName(self) -> str:
+    return self._activeModel.name if self._activeModel is not None else 'Model'
+
+  @property
+  def _modelWrapperSystem(self) -> System | None:
+    return self._activeModel.modelWrapperSystem if self._activeModel is not None else None
+
+  @_modelWrapperSystem.setter
+  def _modelWrapperSystem(self, value: System | None) -> None:
+    if self._activeModel is not None:
+      self._activeModel.modelWrapperSystem = value
+
+  @property
+  def _diagramStack(self) -> list:
+    return self._activeModel.diagramStack if self._activeModel is not None else []
+
+  @_diagramStack.setter
+  def _diagramStack(self, value: list) -> None:
+    if self._activeModel is not None:
+      self._activeModel.diagramStack = value
+
+  def _uniqueModelName(self, baseName: str) -> str:
+    '''Disambiguates two open models that happen to share the same SSD name
+    (e.g. two different files both internally named "default") -- File >
+    New/Open must never let a second model silently replace or merge with
+    an already-open one just because their names collide.'''
+    if baseName not in self._models:
+      return baseName
+    n = 2
+    while f'{baseName} ({n})' in self._models:
+      n += 1
+    return f'{baseName} ({n})'
+
+  def _activateModelForNode(self, node) -> bool:
+    '''Tree context-menu actions can target any open model's node directly
+    (SystemTreeView's context menu acts on whatever was right-clicked,
+    without first requiring a left-click to select it into focus -- see
+    _onTreeItemClicked's own docstring on why left-click uses `clicked` and
+    not `currentChanged`). Make sure self._activeModel -- and therefore
+    self._ssp, self._diagramStack, etc. -- actually matches the node's own
+    model before any operation on it runs, so right-clicking a node that
+    belongs to a model other than the currently-active one doesn't silently
+    edit the wrong SSP.'''
+    modelNode = node
+    while modelNode is not None and modelNode.kind != KIND_MODEL:
+      modelNode = modelNode.parent
+    if modelNode is None:
+      return False
+    model = self._models.get(modelNode.label)
+    if model is None:
+      return False
+    self._activeModel = model
+    return True
+
   # --- File actions ----------------------------------------------------------
 
   def _onNewTriggered(self) -> None:
@@ -240,9 +324,8 @@ class MainWindow(QMainWindow):
     ssp.activeVariantName = ssd.name
 
     ssd.system.name = dialog.rootSystemName()
-    self._ssp = ssp
-    self._loadFromSsp()
-    self.setWindowTitle(f'OMSimulatorGui - {dialog.modelName()}')
+    self._addModel(ssp)
+    self.setWindowTitle(f'OMSimulatorGui - {self._activeModel.name}')
     self.statusBar().showMessage('New model created', 5000)
 
   def _onOpenTriggered(self) -> None:
@@ -251,17 +334,17 @@ class MainWindow(QMainWindow):
       self.openFile(path)
 
   def openFile(self, path: str) -> None:
-    '''Loads `path` as the active SSP and refreshes the tree and diagram.'''
+    '''Loads `path` as a newly-open SSP (added alongside any already-open
+    models, never replacing one) and refreshes the tree and diagram.'''
     try:
       ssp = SSP(path)
     except Exception as e:
       QMessageBox.critical(self, 'Failed to open', f'Could not open "{path}":\n{e}')
       return
 
-    self._ssp = ssp
-    self._loadFromSsp()
+    self._addModel(ssp)
 
-    self.setWindowTitle(f'OMSimulatorGui - {Path(path).name}')
+    self.setWindowTitle(f'OMSimulatorGui - {self._activeModel.name}')
     self.statusBar().showMessage(f'Loaded {path}', 5000)
 
   def _onSaveAsTriggered(self) -> None:
@@ -278,25 +361,37 @@ class MainWindow(QMainWindow):
     self.setWindowTitle(f'OMSimulatorGui - {Path(path).name}')
     self.statusBar().showMessage(f'Saved {path}', 5000)
 
-  def _loadFromSsp(self) -> None:
-    '''(Re)initializes the tree/diagram from self._ssp's active variant.
-    The tree shows the model (SSD) name as a wrapper above the root system's
-    own row; the diagram mirrors that with a synthetic "model level" showing
-    the root system as a single box (its own connectors as ports) -- double-
-    clicking it drills in exactly like any nested subsystem, reusing the same
-    ElementIconItem/drill-down machinery. The model level is never part of
-    any cref -- see _diagramLevelPath.'''
-    variant = self._ssp.activeVariant if self._ssp is not None else None
+  def _addModel(self, ssp: SSP) -> None:
+    '''Registers a newly created/opened SSP as a new entry in self._models
+    (disambiguated via _uniqueModelName if its name clashes with an
+    already-open one) and makes it the active model -- so File > New/Open
+    always grows the tree with a new top-level row instead of silently
+    replacing whatever was open before.'''
+    variant = ssp.activeVariant
     rootSystem = variant.system if variant is not None else None
-    modelName = variant.name if variant is not None else 'Model'
+    baseName = variant.name if variant is not None else 'Model'
+    name = self._uniqueModelName(baseName)
 
-    self._treeModel.setSystem(rootSystem, modelName)
-    self._treeView.expandAll()
+    model = _OpenModel(ssp, name)
+    model.modelWrapperSystem = self._makeModelWrapper(rootSystem) if rootSystem is not None else None
+    model.diagramStack = [(model.modelWrapperSystem, name)] if rootSystem is not None else []
+    self._models[name] = model
+    self._activeModel = model
 
-    self._modelName = modelName
-    self._modelWrapperSystem = self._makeModelWrapper(rootSystem) if rootSystem is not None else None
-    self._diagramStack = [(self._modelWrapperSystem, modelName)] if rootSystem is not None else []
+    self._refreshTree()
     self._updateDiagram()
+
+  def _refreshTree(self) -> None:
+    '''Rebuilds the tree from every currently-open model's root System --
+    the diagram mirrors whichever one is active with a synthetic "model
+    level" showing that model's root system as a single box (its own
+    connectors as ports) -- double-clicking it drills in exactly like any
+    nested subsystem, reusing the same ElementIconItem/drill-down machinery.
+    The model level is never part of any cref -- see _diagramLevelPath.'''
+    models = [(model.ssp.activeVariant.system, name) for name, model in self._models.items()
+              if model.ssp.activeVariant is not None and model.ssp.activeVariant.system is not None]
+    self._treeModel.setModels(models)
+    self._treeView.expandAll()
 
   @staticmethod
   def _makeModelWrapper(rootSystem: System) -> System:
@@ -394,9 +489,16 @@ class MainWindow(QMainWindow):
     its own contents (that's what double-clicking its box on the canvas is
     for). So clicking the model row or the root system both land on the
     model level (where the root system appears as a box); clicking a nested
-    system lands one level up, wherever its own box lives.'''
+    system lands one level up, wherever its own box lives.
+
+    Clicking a row that belongs to a different (currently inactive) open
+    model switches self._activeModel first, so the diagram switches to that
+    model's own navigation stack rather than staying on whichever model was
+    active before.'''
     node = self._treeModel.nodeFromIndex(index)
     if node is None:
+      return
+    if not self._activateModelForNode(node):
       return
 
     if node.kind == KIND_MODEL:
@@ -466,6 +568,8 @@ class MainWindow(QMainWindow):
       element.elementgeometry = elementGeometryAt(scenePos)
 
   def _onAddSystemRequested(self, node) -> None:
+    if not self._activateModelForNode(node):
+      return
     self._addSystemAtPath(self._crefPath(node))
 
   def _onCanvasAddSystemRequested(self, scenePos) -> None:
@@ -495,6 +599,8 @@ class MainWindow(QMainWindow):
     self._onModelChanged()
 
   def _onAddComponentRequested(self, node) -> None:
+    if not self._activateModelForNode(node):
+      return
     self._addComponentAtPath(self._crefPath(node))
 
   def _onCanvasAddComponentRequested(self, scenePos) -> None:
@@ -519,6 +625,8 @@ class MainWindow(QMainWindow):
     self._onModelChanged()
 
   def _onAddConnectorRequested(self, node) -> None:
+    if not self._activateModelForNode(node):
+      return
     self._addConnectorAtPath(self._crefPath(node))
 
   def _onCanvasAddConnectorRequested(self, scenePos) -> None:
@@ -543,6 +651,8 @@ class MainWindow(QMainWindow):
     self._onModelChanged()
 
   def _onDeleteRequested(self, node) -> None:
+    if not self._activateModelForNode(node):
+      return
     if QMessageBox.question(self, 'Delete', f'Delete "{node.label}"?') != QMessageBox.StandardButton.Yes:
       return
     try:
@@ -553,6 +663,8 @@ class MainWindow(QMainWindow):
     self._onModelChanged()
 
   def _onRenameRequested(self, node) -> None:
+    if not self._activateModelForNode(node):
+      return
     currentName = str(node.obj.name)
     newName, ok = QInputDialog.getText(self, 'Rename', 'New name:', text=currentName)
     newName = newName.strip()
@@ -566,6 +678,10 @@ class MainWindow(QMainWindow):
     self._onModelChanged()
 
   def _onPropertiesRequested(self, node) -> None:
+    # Not strictly needed for correctness (the edit below operates directly
+    # on node.obj, not through self._ssp), but keeps the diagram canvas
+    # pointed at the model actually being edited afterward.
+    self._activateModelForNode(node)
     self._showElementProperties(node.obj)
 
   def _onCanvasPropertiesRequested(self, component) -> None:

@@ -127,51 +127,49 @@ def _buildSystemNode(system: System, label: str, parent: TreeNode | None = None)
 
 
 class SystemTreeModel(QAbstractItemModel):
-  '''Tree model over one SSD variant. The tree shows the model (SSD) name as
-  a top-level wrapper row, with the root System nested one level below it as
-  its own visible row -- matching OMEdit's "model name > root system" shape.
-  This is purely a display convention: the model wrapper carries no
-  operations of its own (right-clicking it shows no menu) and every cref
-  built for the API is anchored at the *System*'s name, never the model
-  name -- see MainWindow._crefPath's KIND_SYSTEM-only ancestor walk.
+  '''Tree model over any number of open SSD variants. Each open model gets
+  its own top-level wrapper row (labeled with that model's own name), with
+  its root System nested one level below it as its own visible row --
+  matching OMEdit's "model name > root system" shape, just repeated once per
+  open model instead of assuming there is only ever one. This is purely a
+  display convention: a model wrapper row carries no operations of its own
+  (right-clicking it shows no menu) and every cref built for the API is
+  anchored at the *System*'s name, never the model name -- see
+  MainWindow._crefPath's KIND_SYSTEM-only ancestor walk.
 
-  The root System itself is always a real row (not hidden) -- otherwise a
+  A root System itself is always a real row (not hidden) -- otherwise a
   brand-new, still-empty model would show nothing to right-click to start
   adding systems/components/connectors to it.'''
 
   def __init__(self, parent=None):
     super().__init__(parent)
     self._invisibleRoot = TreeNode(KIND_INVISIBLE_ROOT, '', None)
-    self._root: TreeNode | None = None
-    self._modelName = 'Model'
+    # Ordered (rootSystem, modelName) pairs -- the source of truth setModels()
+    # rebuilds from; refresh() just replays the same list.
+    self._models: list[tuple[System, str]] = []
 
-  def setSystem(self, system: System | None, modelName: str = 'Model') -> None:
-    '''Rebuild the tree from `system` (the root System of the active SSD
-    variant) wrapped under a `modelName` row, or clear the model if `system`
-    is None.'''
+  def setModels(self, models: list[tuple[System, str]]) -> None:
+    '''Rebuild the whole tree from an ordered list of (rootSystem, modelName)
+    pairs -- one top-level row per open model.'''
     self.beginResetModel()
     self._invisibleRoot = TreeNode(KIND_INVISIBLE_ROOT, '', None)
-    self._modelName = modelName
-    if system is not None:
+    self._models = list(models)
+    for system, modelName in self._models:
       modelNode = TreeNode(KIND_MODEL, modelName, system)
       self._invisibleRoot.addChild(modelNode)
-      self._root = _buildSystemNode(system, str(system.name))
-      modelNode.addChild(self._root)
-    else:
-      self._root = None
+      modelNode.addChild(_buildSystemNode(system, str(system.name)))
     self.endResetModel()
 
   def refresh(self) -> None:
-    '''Rebuild the tree from whatever System object backs the current root node
-    (call after any structural edit to the underlying model).'''
-    if self._root is None:
-      return
-    self.setSystem(self._root.obj, self._modelName)
+    '''Rebuild the whole tree from the same (rootSystem, modelName) pairs
+    last given to setModels() -- call after any structural edit anywhere,
+    in any open model.'''
+    self.setModels(self._models)
 
   def isTopLevelSystem(self, node: TreeNode) -> bool:
-    '''True if `node` is the root System itself (as opposed to a nested one) --
-    used by the tree view to disable "Delete" on it.'''
-    return node is self._root
+    '''True if `node` is some open model's own root System (as opposed to a
+    nested one) -- used by the tree view to disable "Delete" on it.'''
+    return node.parent is not None and node.parent.kind == KIND_MODEL
 
   def nodeFromIndex(self, index: QModelIndex) -> TreeNode | None:
     if not index.isValid():
