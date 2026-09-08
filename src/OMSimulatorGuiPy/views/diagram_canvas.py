@@ -57,7 +57,7 @@ from OMSimulator.connector import ConnectorGeometry
 from OMSimulator.elementgeometry import ElementGeometry
 from OMSimulator.variable import Causality
 
-from OMSimulatorGui.views.diagram_items import ConnectionItem, ElementIconItem, PortItem, SystemBoundaryItem, defaultRoute, geometryToSceneRect
+from OMSimulatorGui.views.diagram_items import ConnectionItem, ElementIconItem, PortItem, SystemBoundaryItem, geometryToSceneRect
 
 _FALLBACK_COLS = 4
 _FALLBACK_CELL_W = 80.0
@@ -279,6 +279,15 @@ def _elementNameForPort(port: PortItem) -> str:
   return parent.name if isinstance(parent, ElementIconItem) else ''
 
 
+_DRAG_STEER_THRESHOLD = 8.0  # perpendicular deviation (scene units) before a new corner locks in
+
+
+def _axisPoint(anchor: QPointF, target: QPointF, axis: str) -> QPointF:
+  '''target projected onto the line through anchor along the given axis --
+  'h' keeps anchor's y and follows target's x, 'v' the other way around.'''
+  return QPointF(target.x(), anchor.y()) if axis == 'h' else QPointF(anchor.x(), target.y())
+
+
 _UNSET = object()  # distinct from any real System *and* from None -- see DiagramView.__init__
 
 
@@ -288,14 +297,19 @@ class DiagramView(QGraphicsView):
   setSystem() for both drill-down and "up".
 
   Dragging from one port to another emits connectionRequested with both
-  ports' (elementName, connectorName) -- MainWindow builds the crefs and
-  calls SSP.addConnection, which already validates causality (including the
-  flipped-direction case) internally. Right-clicking a connection emits
+  ports' (elementName, connectorName) plus whatever waypoints the drag
+  itself steered through -- MainWindow builds the crefs and calls
+  SSP.addConnection (which already validates causality, including the
+  flipped-direction case, internally) then applies those waypoints to the
+  new connection's connectionGeometry. Right-clicking a connection emits
   connectionDeleteRequested the same way, for SSP.deleteConnection.
   '''
 
   systemDrillDownRequested = Signal(object, str)
-  connectionRequested = Signal(str, str, str, str)       # elem1, conn1, elem2, conn2
+  # elem1, conn1, elem2, conn2, waypoints (list[QPointF] the user actually
+  # steered through while dragging -- see _updateConnectDragPreview; empty
+  # if they dragged straight across without steering).
+  connectionRequested = Signal(str, str, str, str, object)
   connectionDeleteRequested = Signal(str, str, str, str)  # elem1, conn1, elem2, conn2
   # Right-click on empty canvas -- adds to the level shown here, at the
   # click's own scene position (see MainWindow's _addSystemAtPath and co.)
@@ -321,6 +335,8 @@ class DiagramView(QGraphicsView):
     self._currentSystem = _UNSET
     self._connectDragPort: PortItem | None = None
     self._connectDragLine: QGraphicsPathItem | None = None
+    self._connectDragPoints: list[QPointF] = []  # corners locked in so far, see _updateConnectDragPreview
+    self._connectDragAxis: str | None = None     # 'h' or 'v': the axis the trailing (uncommitted) segment tracks
     self._reshapingConnection: ConnectionItem | None = None
     # True once fitInView has actually run for the level currently shown.
     self._hasFitCurrentLevel = False
@@ -408,6 +424,8 @@ class DiagramView(QGraphicsView):
     if isinstance(item, PortItem):
       self._connectDragPort = item
       startPos = item.scenePos()
+      self._connectDragPoints = [startPos]
+      self._connectDragAxis = None
       self._connectDragLine = QGraphicsPathItem()
       self._connectDragLine.setPath(QPainterPath(startPos))
       self._connectDragLine.setPen(QPen(QColor(200, 70, 70), 1.5, Qt.PenStyle.DashLine))
@@ -426,19 +444,44 @@ class DiagramView(QGraphicsView):
 
     super().mousePressEvent(event)
 
+  def _updateConnectDragPreview(self, currentPos: QPointF) -> None:
+    '''Builds the drag-to-connect preview from the path the mouse has
+    actually traveled since the drag started, rather than a pre-computed
+    shape: the trailing (uncommitted) segment tracks whichever axis
+    (horizontal/vertical) the cursor is currently moving along from the
+    last locked-in corner, and a new corner locks in the moment the cursor
+    picks up enough perpendicular movement to be steering the other way.
+    A quick, direct drag that never steers ends up with no interior corners
+    at all -- mouseReleaseEvent then leaves connectionGeometry unset so the
+    finished connection falls back to defaultRoute's automatic elbow,
+    exactly like it did before this existed.'''
+    lastCorner = self._connectDragPoints[-1]
+    dx = currentPos.x() - lastCorner.x()
+    dy = currentPos.y() - lastCorner.y()
+
+    if self._connectDragAxis is None:
+      if abs(dx) < _DRAG_STEER_THRESHOLD and abs(dy) < _DRAG_STEER_THRESHOLD:
+        livePoint = currentPos
+      else:
+        self._connectDragAxis = 'h' if abs(dx) >= abs(dy) else 'v'
+        livePoint = _axisPoint(lastCorner, currentPos, self._connectDragAxis)
+    else:
+      livePoint = _axisPoint(lastCorner, currentPos, self._connectDragAxis)
+      deviation = abs(dy) if self._connectDragAxis == 'h' else abs(dx)
+      if deviation > _DRAG_STEER_THRESHOLD:
+        self._connectDragPoints.append(livePoint)
+        self._connectDragAxis = 'v' if self._connectDragAxis == 'h' else 'h'
+        livePoint = _axisPoint(livePoint, currentPos, self._connectDragAxis)
+
+    path = QPainterPath(self._connectDragPoints[0])
+    for point in self._connectDragPoints[1:]:
+      path.lineTo(point)
+    path.lineTo(livePoint)
+    self._connectDragLine.setPath(path)
+
   def mouseMoveEvent(self, event) -> None:
     if self._connectDragPort is not None:
-      # Elbow the in-progress preview the same way a finished connection with
-      # no saved geometry would render (defaultRoute), so the shape the user
-      # sees while dragging already matches the shape they'll get on release
-      # instead of jumping from a straight preview line to a bent result.
-      startPos = self._connectDragPort.scenePos()
-      endPos = self.mapToScene(event.pos())
-      route = defaultRoute(startPos, endPos)
-      path = QPainterPath(route[0])
-      for point in route[1:]:
-        path.lineTo(point)
-      self._connectDragLine.setPath(path)
+      self._updateConnectDragPreview(self.mapToScene(event.pos()))
       event.accept()
       return
     if self._reshapingConnection is not None:
@@ -454,12 +497,18 @@ class DiagramView(QGraphicsView):
       self._connectDragPort = None
       self._scene.removeItem(self._connectDragLine)
       self._connectDragLine = None
+      # Interior corners actually steered through, excluding the start
+      # anchor (that's always the port's own live position, recomputed on
+      # render like any other connection's endpoints).
+      waypoints = self._connectDragPoints[1:]
+      self._connectDragPoints = []
+      self._connectDragAxis = None
 
       targetItem = self.itemAt(event.pos())
       if isinstance(targetItem, PortItem) and targetItem is not startPort:
         self.connectionRequested.emit(
             _elementNameForPort(startPort), str(startPort.connector.name),
-            _elementNameForPort(targetItem), str(targetItem.connector.name))
+            _elementNameForPort(targetItem), str(targetItem.connector.name), waypoints)
       event.accept()
       return
     if self._reshapingConnection is not None:

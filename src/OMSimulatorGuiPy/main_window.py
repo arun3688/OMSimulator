@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
 )
 
 from OMSimulator import SSP, Connector, CRef, System
+from OMSimulator.connection import ConnectionGeometry
 
 from OMSimulatorGui.dialogs.add_connector_dialog import AddConnectorDialog
 from OMSimulatorGui.dialogs.add_submodel_dialog import AddSubModelDialog
@@ -355,12 +356,24 @@ class MainWindow(QMainWindow):
       return CRef(*basePath, elementName, connectorName)
     return CRef(*basePath, connectorName)
 
-  def _onConnectionRequested(self, elem1: str, conn1: str, elem2: str, conn2: str) -> None:
+  def _onConnectionRequested(self, elem1: str, conn1: str, elem2: str, conn2: str, waypoints=None) -> None:
+    system = self._diagramStack[-1][0]
     try:
       self._ssp.addConnection(self._connectionCref(elem1, conn1), self._connectionCref(elem2, conn2))
     except Exception as e:
       QMessageBox.critical(self, 'Add Connection failed', str(e))
       return
+    if waypoints:
+      # System.addConnection may store the connection in flipped order
+      # (start/end swapped) if that's the only causality-valid direction --
+      # it's always appended last regardless. Reverse the steered waypoints
+      # to match if so, so the saved shape still traces the path the user
+      # actually dragged rather than running backwards.
+      connection = system.connections[-1]
+      if str(connection.startElement) != elem1 or str(connection.startConnector) != conn1:
+        waypoints = list(reversed(waypoints))
+      connection.connectionGeometry = ConnectionGeometry(
+          pointsX=[p.x() for p in waypoints], pointsY=[-p.y() for p in waypoints])
     self._onModelChanged()
 
   def _onConnectionDeleteRequested(self, elem1: str, conn1: str, elem2: str, conn2: str) -> None:

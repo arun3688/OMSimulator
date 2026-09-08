@@ -395,19 +395,43 @@ def _pointSegmentDistance(p: QPointF, a: QPointF, b: QPointF) -> float:
   return math.hypot(p.x() - projection.x(), p.y() - projection.y())
 
 
+_ROUTE_STUB = 15.0          # short leg leaving/entering a port, in its own arrow direction
+_ROUTE_DETOUR_MARGIN = 20.0  # clearance above both boxes for the "backward" detour
+
+
 def defaultRoute(start: QPointF, end: QPointF) -> list[QPointF]:
   '''The route a connection gets when it has no saved connectionGeometry yet
   -- an immediate orthogonal elbow, not a raw diagonal, matching OMEdit's own
-  default routing. Ports are always drawn as small rightward-pointing arrows
-  in this app regardless of which edge they actually sit on (see this
-  module's docstring), so a route that leaves the start heading right and
-  arrives at the end heading right too (elbowing at the horizontal midpoint)
-  reads correctly for every port pair. Ports already level with each other
-  collapse this to a plain straight line, same as before.'''
-  if abs(start.y() - end.y()) < 1e-6:
-    return [start, end]
-  midX = (start.x() + end.x()) / 2.0
-  return [start, QPointF(midX, start.y()), QPointF(midX, end.y()), end]
+  default routing. Also used for the live drag-preview while connecting two
+  ports (DiagramView.mouseMoveEvent recomputes it on every move), so this is
+  what makes the preview reroute itself as the cursor crosses back and forth
+  relative to the source -- not a fixed shape, a function of wherever the
+  target currently is.
+
+  Ports are always drawn as small rightward-pointing arrows in this app
+  regardless of which edge they actually sit on (see this module's
+  docstring). When the target is far enough to the right, a route that
+  leaves the start heading right and arrives at the end heading right too
+  (elbowing at the horizontal midpoint) reads correctly for every port pair,
+  and ports already level with each other collapse this to a plain straight
+  line. But when the target sits behind the source (level with or to the
+  left of it -- e.g. connecting a later element's output back to an earlier
+  element's input), that same "exit right, enter right" shape would have to
+  double back through whichever box's own edge it just left. In that case,
+  route around instead: a short stub out of the source (matching its arrow),
+  a detour above both boxes, then a short stub into the target from its own
+  left (matching its arrow too, rather than backing into it from the right).'''
+  if end.x() >= start.x() + 2 * _ROUTE_STUB:
+    if abs(start.y() - end.y()) < 1e-6:
+      return [start, end]
+    midX = (start.x() + end.x()) / 2.0
+    return [start, QPointF(midX, start.y()), QPointF(midX, end.y()), end]
+
+  detourY = min(start.y(), end.y()) - _ROUTE_DETOUR_MARGIN
+  exitX = start.x() + _ROUTE_STUB
+  enterX = end.x() - _ROUTE_STUB
+  return [start, QPointF(exitX, start.y()), QPointF(exitX, detourY),
+          QPointF(enterX, detourY), QPointF(enterX, end.y()), end]
 
 
 class ConnectionItem(QGraphicsPathItem):
