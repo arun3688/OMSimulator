@@ -238,9 +238,15 @@ class ElementIconItem(QGraphicsRectItem):
 
   def commitPositionIfMoved(self) -> None:
     '''Writes self.pos()'s delta from the last commit into elementgeometry
-    (translated back to SSD's Y-up convention) and notifies onMoved. Split
-    out from mouseReleaseEvent so it can be exercised without a real Qt
-    mouse-event sequence.'''
+    (translated back to SSD's Y-up convention) and notifies onMoved with
+    (this element's name, the scene-space delta) so any attached connection
+    with explicit waypoints can be shifted by the same amount (see
+    DiagramScene._onElementMoved) -- without that, a connection's anchor
+    would snap to the element's new port position while its interior
+    waypoints stayed exactly where they were, stretching the path into a
+    shape unrelated to where the element actually moved. Split out from
+    mouseReleaseEvent so it can be exercised without a real Qt mouse-event
+    sequence.'''
     newScenePos = self.pos()
     delta = newScenePos - self._dragStartScenePos
     self._dragStartScenePos = newScenePos
@@ -259,7 +265,7 @@ class ElementIconItem(QGraphicsRectItem):
     geometry.y2 -= delta.y()
 
     if self._onMoved is not None:
-      self._onMoved()
+      self._onMoved(self.name, delta)
 
   # --- resize ------------------------------------------------------------------
 

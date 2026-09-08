@@ -266,9 +266,29 @@ class DiagramScene(QGraphicsScene):
     item = self._elementItems.get(elementName)
     return None if item is None else item.portScenePos(connectorName)
 
-  def _onElementMoved(self) -> None:
+  def _onElementMoved(self, elementName: str | None = None, delta: QPointF | None = None) -> None:
     '''An icon settled after a drag: rebuild so connections (baked in as
-    static polylines, not live-tracked mid-drag) snap to the new position.'''
+    static polylines, not live-tracked mid-drag) snap to the new position.
+
+    Shared as the onMoved callback for ports and connection-reshape commits
+    too (both call it with no arguments -- a plain rebuild is all they need,
+    since a port's own scene position and a connection's own waypoints are
+    already exactly what moved in those cases). Only ElementIconItem passes
+    (name, delta): when a whole ELEMENT moves, any connection attached to it
+    that has explicit waypoints needs those waypoints shifted by the same
+    delta first -- otherwise the connection's start/end anchor would snap to
+    the element's new port position via _resolvePortPos while its interior
+    waypoints stayed exactly where they were, stretching the path into a
+    shape unrelated to where the element actually is now.'''
+    if elementName is not None and delta is not None and not delta.isNull():
+      deltaModelX = delta.x()
+      deltaModelY = -delta.y()  # Y-flip: scene Y-down -> SSD Y-up
+      for connection in self._system.connections:
+        if str(connection.startElement) == elementName or str(connection.endElement) == elementName:
+          geometry = connection.connectionGeometry
+          if geometry is not None:
+            geometry.pointsX = [x + deltaModelX for x in geometry.pointsX]
+            geometry.pointsY = [y + deltaModelY for y in geometry.pointsY]
     self.setSystem(self._system)
 
 
