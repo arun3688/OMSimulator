@@ -564,6 +564,12 @@ class DiagramView(QGraphicsView):
     item = self.itemAt(event.pos())
 
     if item is None or isinstance(item, SystemBoundaryItem):
+      if self._currentSystem is None:
+        # No model loaded/created yet (just the blank default canvas) --
+        # there's nothing to add a system/component/connector to, so don't
+        # even offer the menu rather than showing it and then rejecting
+        # whatever gets picked.
+        return
       # Empty canvas: add to whatever level is currently shown here. The
       # dashed SystemBoundaryItem covers the whole scene, so a right-click
       # anywhere inside it (not just where nothing is drawn at all) counts
