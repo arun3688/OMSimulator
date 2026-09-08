@@ -700,10 +700,9 @@ class MainWindow(QMainWindow):
       return
     ssd = self._ssp.activeVariant
     dialog = SimulationSettingsDialog(ssd, self)
-    if dialog.exec() != QDialog.DialogCode.Accepted:
-      return
-    ssd.startTime = dialog.startTime()
-    ssd.stopTime = dialog.stopTime()
-    ssd.tolerance = dialog.tolerance()
-    ssd.maximumStepSize = dialog.stepSize()
-    ssd.resultFile = dialog.resultFile()
+    if dialog.exec() == QDialog.DialogCode.Accepted:
+      # The dialog applies its own fields plus the solver configs/component
+      # assignments directly to ssd on accept (see its own docstring for why
+      # it deviates from the collect-only Add* dialog pattern); nothing left
+      # to apply here.
+      self._onModelChanged()
