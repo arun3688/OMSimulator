@@ -71,6 +71,7 @@ from OMSimulatorGui.dialogs.add_system_dialog import AddSystemDialog
 from OMSimulatorGui.dialogs.create_model_dialog import CreateModelDialog
 from OMSimulatorGui.dialogs.element_properties_dialog import ElementPropertiesDialog
 from OMSimulatorGui.dialogs.simulation_settings_dialog import SimulationSettingsDialog
+from OMSimulatorGui.dialogs.variants_dialog import VariantsDialog
 from OMSimulatorGui.models.system_tree_model import (
     KIND_COMPONENT,
     KIND_COMPONENT_TABLE,
@@ -237,6 +238,8 @@ class MainWindow(QMainWindow):
     modelMenu = self.menuBar().addMenu('&Model')
     simulationSettingsAction = modelMenu.addAction('&Simulation Settings...')
     simulationSettingsAction.triggered.connect(self._onSimulationSettingsTriggered)
+    variantsAction = modelMenu.addAction('&Variants...')
+    variantsAction.triggered.connect(self._onVariantsTriggered)
 
   # --- Active-model properties -------------------------------------------------
   # Thin accessors over self._activeModel, so the rest of this class can keep
@@ -280,6 +283,21 @@ class MainWindow(QMainWindow):
     while f'{baseName} ({n})' in self._models:
       n += 1
     return f'{baseName} ({n})'
+
+  def _renameModel(self, model: '_OpenModel', newBaseName: str) -> None:
+    '''Re-keys self._models under a new display name -- currently only used
+    after activating a different variant (see _onVariantsTriggered), since
+    the tree's top-level row for a model is meant to track whichever variant
+    is currently active, the same way it's chosen from the active variant's
+    name when the model is first opened (see _addModel). Deduplicates via
+    _uniqueModelName exactly like a newly-opened model would, so switching to
+    a variant name that collides with some other already-open model's name
+    doesn't silently merge the two rows.'''
+    if newBaseName == model.name:
+      return
+    del self._models[model.name]
+    model.name = self._uniqueModelName(newBaseName)
+    self._models[model.name] = model
 
   def _activateModelForNode(self, node) -> bool:
     '''Tree context-menu actions can target any open model's node directly
@@ -368,18 +386,28 @@ class MainWindow(QMainWindow):
     always grows the tree with a new top-level row instead of silently
     replacing whatever was open before.'''
     variant = ssp.activeVariant
-    rootSystem = variant.system if variant is not None else None
     baseName = variant.name if variant is not None else 'Model'
     name = self._uniqueModelName(baseName)
 
     model = _OpenModel(ssp, name)
-    model.modelWrapperSystem = self._makeModelWrapper(rootSystem) if rootSystem is not None else None
-    model.diagramStack = [(model.modelWrapperSystem, name)] if rootSystem is not None else []
+    self._rebuildDiagramWrapper(model)
     self._models[name] = model
     self._activeModel = model
 
     self._refreshTree()
     self._updateDiagram()
+
+  def _rebuildDiagramWrapper(self, model: _OpenModel) -> None:
+    '''(Re)builds a model's throwaway model-level diagram wrapper and resets
+    its navigation stack from its SSP's *current* active variant. Needed not
+    just when a model is first opened but also whenever its active variant
+    changes (see _onVariantsTriggered) -- the wrapper/stack are built from a
+    particular variant's root System object, so switching variants leaves
+    them pointing at a system that's no longer the one being edited.'''
+    variant = model.ssp.activeVariant
+    rootSystem = variant.system if variant is not None else None
+    model.modelWrapperSystem = self._makeModelWrapper(rootSystem) if rootSystem is not None else None
+    model.diagramStack = [(model.modelWrapperSystem, model.name)] if rootSystem is not None else []
 
   def _refreshTree(self) -> None:
     '''Rebuilds the tree from every currently-open model's root System --
@@ -706,3 +734,29 @@ class MainWindow(QMainWindow):
       # it deviates from the collect-only Add* dialog pattern); nothing left
       # to apply here.
       self._onModelChanged()
+
+  # --- Variants -----------------------------------------------------------
+
+  def _onVariantsTriggered(self) -> None:
+    if self._ssp is None:
+      QMessageBox.information(self, 'No model', 'Create or open a model first.')
+      return
+    model = self._activeModel
+    dialog = VariantsDialog(self._ssp, self)
+    dialog.exec()
+    # VariantsDialog mutates self._ssp directly and immediately (see its own
+    # docstring) -- activating a different variant may have swapped out the
+    # root System object the tree and diagram wrapper/stack were built from,
+    # and the model's own tree-row name should track whichever variant is
+    # now active (same as when the model was first opened -- see _addModel).
+    # _onModelChanged()'s tree refresh replays the *same* System objects the
+    # tree was last built from (correct for in-place edits, e.g. adding a
+    # component), which is exactly wrong here -- go through _refreshTree()
+    # instead, which re-reads model.ssp.activeVariant.system fresh, same as
+    # when a model is first opened.
+    activeVariant = model.ssp.activeVariant
+    if activeVariant is not None:
+      self._renameModel(model, activeVariant.name)
+    self._rebuildDiagramWrapper(model)
+    self._refreshTree()
+    self._updateDiagram()

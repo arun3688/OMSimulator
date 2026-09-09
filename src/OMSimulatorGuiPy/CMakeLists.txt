@@ -30,6 +30,7 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/dialogs/__init__.py"
               "${CMAKE_CURRENT_SOURCE_DIR}/dialogs/element_properties_dialog.py"
               "${CMAKE_CURRENT_SOURCE_DIR}/dialogs/simulation_settings_dialog.py"
               "${CMAKE_CURRENT_SOURCE_DIR}/dialogs/solver_config_dialog.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}/dialogs/variants_dialog.py"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/OMSimulatorGui/dialogs)
 
 if(MSVC)
