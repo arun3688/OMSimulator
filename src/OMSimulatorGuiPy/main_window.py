@@ -47,6 +47,7 @@ Simulation and the XML viewer land in later milestones (see the plan this
 was built from).
 '''
 
+import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -60,6 +61,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStatusBar,
     QToolBar,
+    QVBoxLayout,
+    QWidget,
 )
 
 from OMSimulator import SSP, Connector, CRef, System
@@ -80,7 +83,10 @@ from OMSimulatorGui.models.system_tree_model import (
     KIND_SYSTEM,
     SystemTreeModel,
 )
+from OMSimulatorGui.simulation.sim_client import SimulationClient
 from OMSimulatorGui.views.diagram_canvas import DiagramView, connectorGeometryAt, defaultCanvasCenter, elementGeometryAt
+from OMSimulatorGui.views.results_viewer import ResultsViewer
+from OMSimulatorGui.views.simulation_progress_panel import SimulationProgressPanel
 from OMSimulatorGui.views.system_tree_view import SystemTreeView
 
 
@@ -147,6 +153,14 @@ class MainWindow(QMainWindow):
     self._models: dict[str, _OpenModel] = {}
     self._activeModel: _OpenModel | None = None
 
+    # Simulation (see _onSimulateTriggered): only one run at a time across
+    # the whole window (not per-model) -- keeping this simple for v1 rather
+    # than tracking a run per open model. self._resultsViewers keeps every
+    # opened ResultsViewer window alive (nothing else references them once
+    # _onSimulationFinished returns).
+    self._simulationClient: SimulationClient | None = None
+    self._resultsViewers: list[ResultsViewer] = []
+
     self._treeModel = SystemTreeModel(self)
     self._treeView = SystemTreeView(self)
     self._treeView.setModel(self._treeModel)
@@ -192,9 +206,19 @@ class MainWindow(QMainWindow):
     # attempt already sees the real viewport.
     QTimer.singleShot(0, lambda: self._diagramView.setSystem(None))
 
+    # The simulation progress panel lives below the canvas rather than as a
+    # separate window (see SimulationProgressPanel's own docstring) -- it
+    # starts hidden and only takes up space once a simulation is running.
+    self._simulationPanel = SimulationProgressPanel(self)
+    diagramContainer = QWidget(self)
+    diagramLayout = QVBoxLayout(diagramContainer)
+    diagramLayout.setContentsMargins(0, 0, 0, 0)
+    diagramLayout.addWidget(self._diagramView, 1)
+    diagramLayout.addWidget(self._simulationPanel)
+
     splitter = QSplitter(self)
     splitter.addWidget(self._treeView)
-    splitter.addWidget(self._diagramView)
+    splitter.addWidget(diagramContainer)
     splitter.setStretchFactor(0, 0)
     splitter.setStretchFactor(1, 1)
     splitter.setSizes([300, 900])
@@ -240,6 +264,10 @@ class MainWindow(QMainWindow):
     simulationSettingsAction.triggered.connect(self._onSimulationSettingsTriggered)
     variantsAction = modelMenu.addAction('&Variants...')
     variantsAction.triggered.connect(self._onVariantsTriggered)
+    modelMenu.addSeparator()
+    simulateAction = modelMenu.addAction('S&imulate')
+    simulateAction.setShortcut('Ctrl+R')
+    simulateAction.triggered.connect(self._onSimulateTriggered)
 
   # --- Active-model properties -------------------------------------------------
   # Thin accessors over self._activeModel, so the rest of this class can keep
@@ -760,3 +788,59 @@ class MainWindow(QMainWindow):
     self._rebuildDiagramWrapper(model)
     self._refreshTree()
     self._updateDiagram()
+
+  # --- Simulation (M6) --------------------------------------------------------
+
+  def _onSimulateTriggered(self) -> None:
+    if self._ssp is None:
+      QMessageBox.information(self, 'No model', 'Create or open a model first.')
+      return
+    if self._simulationClient is not None and self._simulationClient.isRunning():
+      QMessageBox.information(self, 'Simulation running',
+                               'A simulation is already running. Stop it before starting another.')
+      return
+
+    # The subprocess gets its own SSP instance loaded from a file (crash
+    # isolation means it can't just share the in-memory object we're
+    # editing) -- export the *current* state of the active variant to a
+    # scratch directory. Working directory is set to the same directory so
+    # the model's own (usually relative) resultFile lands somewhere we know
+    # to look for it afterward.
+    tempDir = tempfile.mkdtemp(prefix='omsimulatorgui_')
+    exportPath = str(Path(tempDir) / 'model.ssp')
+    try:
+      self._ssp.export(exportPath)
+    except Exception as e:
+      QMessageBox.critical(self, 'Export failed', f'Could not export the model for simulation:\n{e}')
+      return
+
+    resultPath = str(Path(tempDir) / self._ssp.activeVariant.resultFile)
+
+    client = SimulationClient(self)
+    try:
+      client.start(exportPath, tempDir)
+    except Exception as e:
+      QMessageBox.critical(self, 'Simulation failed', f'Could not start the simulation:\n{e}')
+      return
+
+    self._simulationClient = client
+    client.finished.connect(lambda success, message: self._onSimulationFinished(success, message, resultPath))
+    self._simulationPanel.setClient(client)
+
+  def _onSimulationFinished(self, success: bool, message: str, resultPath: str) -> None:
+    self._simulationClient = None
+    if not success:
+      if message:
+        QMessageBox.warning(self, 'Simulation failed', message)
+      return
+    if not Path(resultPath).exists():
+      QMessageBox.warning(self, 'No results',
+                           f'Simulation finished but the result file was not found:\n{resultPath}')
+      return
+    try:
+      viewer = ResultsViewer(resultPath, self)
+    except Exception as e:
+      QMessageBox.critical(self, 'Failed to load results', f'Could not load "{resultPath}":\n{e}')
+      return
+    self._resultsViewers.append(viewer)
+    viewer.show()

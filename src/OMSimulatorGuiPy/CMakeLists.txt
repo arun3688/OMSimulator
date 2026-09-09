@@ -20,6 +20,8 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/views/__init__.py"
               "${CMAKE_CURRENT_SOURCE_DIR}/views/system_tree_view.py"
               "${CMAKE_CURRENT_SOURCE_DIR}/views/diagram_canvas.py"
               "${CMAKE_CURRENT_SOURCE_DIR}/views/diagram_items.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}/views/results_viewer.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}/views/simulation_progress_panel.py"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/OMSimulatorGui/views)
 
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/dialogs/__init__.py"
@@ -32,6 +34,17 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/dialogs/__init__.py"
               "${CMAKE_CURRENT_SOURCE_DIR}/dialogs/solver_config_dialog.py"
               "${CMAKE_CURRENT_SOURCE_DIR}/dialogs/variants_dialog.py"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/OMSimulatorGui/dialogs)
+
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/simulation/__init__.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}/simulation/sim_client.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}/simulation/sim_worker.py"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/OMSimulatorGui/simulation)
+
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/results/__init__.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}/results/csv_reader.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}/results/mat_reader.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}/results/result_reader.py"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/OMSimulatorGui/results)
 
 if(MSVC)
   install(FILES OMSimulatorGui.bat TYPE BIN
