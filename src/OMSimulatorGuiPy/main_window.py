@@ -50,7 +50,8 @@ was built from).
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -58,6 +59,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QToolBar,
@@ -88,6 +90,47 @@ from OMSimulatorGui.views.diagram_canvas import DiagramView, connectorGeometryAt
 from OMSimulatorGui.views.results_viewer import ResultsViewer
 from OMSimulatorGui.views.simulation_progress_panel import SimulationProgressPanel
 from OMSimulatorGui.views.system_tree_view import SystemTreeView
+
+
+def _arrowIcon(color: str, size: int = 24) -> QIcon:
+  '''A simple right-pointing triangle, drawn rather than loaded from a file
+  since this project has no icon-asset pipeline yet -- used for the
+  toolbar's Simulate action (matches OMEdit's own green "run" arrow).'''
+  pixmap = QPixmap(size, size)
+  pixmap.fill(Qt.GlobalColor.transparent)
+  painter = QPainter(pixmap)
+  painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+  painter.setPen(Qt.PenStyle.NoPen)
+  painter.setBrush(QColor(color))
+  margin = size * 0.18
+  painter.drawPolygon(QPolygonF([
+      QPointF(margin, margin),
+      QPointF(margin, size - margin),
+      QPointF(size - margin, size / 2),
+  ]))
+  painter.end()
+  return QIcon(pixmap)
+
+
+def _letterIcon(letter: str, color: str, size: int = 24) -> QIcon:
+  '''A rounded, colored square with a bold letter -- used for the toolbar's
+  Simulation Settings action (an "S" icon, distinct from the green
+  Simulate arrow).'''
+  pixmap = QPixmap(size, size)
+  pixmap.fill(Qt.GlobalColor.transparent)
+  painter = QPainter(pixmap)
+  painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+  painter.setPen(Qt.PenStyle.NoPen)
+  painter.setBrush(QColor(color))
+  painter.drawRoundedRect(1, 1, size - 2, size - 2, 4, 4)
+  painter.setPen(QColor('white'))
+  font = painter.font()
+  font.setBold(True)
+  font.setPixelSize(int(size * 0.65))
+  painter.setFont(font)
+  painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, letter)
+  painter.end()
+  return QIcon(pixmap)
 
 
 class _RootBoxProxy:
@@ -227,16 +270,33 @@ class MainWindow(QMainWindow):
     self._breadcrumbLabel = QLabel(self)
     diagramToolbar = QToolBar('Diagram', self)
     diagramToolbar.setMovable(False)
+
     self._upAction = diagramToolbar.addAction('Up')
     self._upAction.setEnabled(False)
     self._upAction.triggered.connect(self._onUpTriggered)
     diagramToolbar.addSeparator()
     diagramToolbar.addWidget(self._breadcrumbLabel)
+
+    # Simulation Settings + Simulate sit centered in the toolbar (an
+    # expanding spacer on each side of the pair) rather than at either end,
+    # matching where OMEdit's own equivalent icons draw the eye.
+    diagramToolbar.addWidget(self._expandingToolbarSpacer())
+    settingsAction = diagramToolbar.addAction(_letterIcon('S', '#455a64'), 'Simulation Settings')
+    settingsAction.triggered.connect(self._onSimulationSettingsTriggered)
+    simulateAction = diagramToolbar.addAction(_arrowIcon('#2e7d32'), 'Simulate')
+    simulateAction.triggered.connect(self._onSimulateTriggered)
+    diagramToolbar.addWidget(self._expandingToolbarSpacer())
+
     self.addToolBar(diagramToolbar)
 
     self.setStatusBar(QStatusBar(self))
 
     self._buildMenus()
+
+  def _expandingToolbarSpacer(self) -> QWidget:
+    spacer = QWidget(self)
+    spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    return spacer
 
   def _buildMenus(self) -> None:
     fileMenu = self.menuBar().addMenu('&File')

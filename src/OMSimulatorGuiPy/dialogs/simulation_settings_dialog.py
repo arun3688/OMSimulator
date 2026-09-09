@@ -31,10 +31,11 @@
 # See the full OSMC Public License conditions for more details.
 
 '''SimulationSettingsDialog: edits the active SSD's own experiment settings
-(General tab, same fields the CLI's --startTime/--stopTime/--tolerance/
---stepSize/--resultFile options override, but persisted on the model itself)
-plus named solver configurations and per-component solver assignments
-(Solver Settings tab), matching OMEdit's "Simulation Setup" dialog.
+(General tab: start/stop time, tolerance, step size, result file, result
+file buffer size, logging interval -- the same fields shown on OMEdit's own
+"Simulation Setup > General" tab, persisted on the model itself) plus named
+solver configurations and per-component solver assignments (Solver Settings
+tab), matching OMEdit's "Simulation Setup" dialog.
 
 Solver configurations are `system.solvers` -- a list of dicts (see
 SSD.newSolver) each shaped by SolverConfigDialog. A component left
@@ -119,6 +120,8 @@ class SimulationSettingsDialog(QDialog):
     self._toleranceEdit = QLineEdit(str(ssd.tolerance), widget)
     self._stepSizeEdit = QLineEdit(str(ssd.maximumStepSize), widget)
     self._resultFileEdit = QLineEdit(ssd.resultFile, widget)
+    self._bufferSizeEdit = QLineEdit(str(ssd.bufferSize), widget)
+    self._loggingIntervalEdit = QLineEdit(str(ssd.loggingInterval), widget)
 
     layout = QFormLayout(widget)
     layout.addRow('Start Time:', self._startTimeEdit)
@@ -126,6 +129,8 @@ class SimulationSettingsDialog(QDialog):
     layout.addRow('Tolerance:', self._toleranceEdit)
     layout.addRow('Step Size:', self._stepSizeEdit)
     layout.addRow('Result File:', self._resultFileEdit)
+    layout.addRow('Result File Buffer Size:', self._bufferSizeEdit)
+    layout.addRow('Logging Interval:', self._loggingIntervalEdit)
     return widget
 
   def startTime(self) -> float:
@@ -142,6 +147,12 @@ class SimulationSettingsDialog(QDialog):
 
   def resultFile(self) -> str:
     return self._resultFileEdit.text().strip()
+
+  def bufferSize(self) -> int:
+    return int(self._bufferSizeEdit.text())
+
+  def loggingInterval(self) -> float:
+    return float(self._loggingIntervalEdit.text())
 
   # --- Solver Settings tab --------------------------------------------------
 
@@ -290,6 +301,8 @@ class SimulationSettingsDialog(QDialog):
       self.stopTime()
       self.tolerance()
       self.stepSize()
+      self.bufferSize()
+      self.loggingInterval()
     except ValueError:
       return
     if not self._resultFileEdit.text().strip():
@@ -300,6 +313,8 @@ class SimulationSettingsDialog(QDialog):
     self._ssd.tolerance = self.tolerance()
     self._ssd.maximumStepSize = self.stepSize()
     self._ssd.resultFile = self.resultFile()
+    self._ssd.bufferSize = self.bufferSize()
+    self._ssd.loggingInterval = self.loggingInterval()
 
     self._ssd.system.solvers = list(self._solverConfigs)
     for _, element in self._components:
