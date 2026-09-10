@@ -58,6 +58,12 @@ class ResultsViewer(QWidget):
 
     self._signals = readResultFile(resultPath)
     self._curves: dict[str, object] = {}
+    # Cycles forward only (never reused on uncheck) so a signal's color
+    # stays stable across toggling other signals on/off -- pg.mkPen()'s own
+    # default pen now resolves to the 'foreground' config color (black,
+    # see above), which made every curve render identically and
+    # indistinguishable from the axes/text.
+    self._nextColorIndex = 0
 
     self._list = QListWidget(self)
     for name in sorted(self._signals):
@@ -86,7 +92,9 @@ class ResultsViewer(QWidget):
     name = item.text()
     if item.checkState() == Qt.CheckState.Checked:
       times, values = self._signals[name]
-      self._curves[name] = self._plot.plot(times, values, name=name, pen=pg.mkPen(width=2))
+      color = pg.intColor(self._nextColorIndex, hues=12)
+      self._nextColorIndex += 1
+      self._curves[name] = self._plot.plot(times, values, name=name, pen=pg.mkPen(color=color, width=2))
     else:
       curve = self._curves.pop(name, None)
       if curve is not None:
