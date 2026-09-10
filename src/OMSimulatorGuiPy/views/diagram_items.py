@@ -49,6 +49,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QPainterPath, QPainterPathStroker, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsSimpleTextItem
 
+from OMSimulator import Component
 from OMSimulator.connection import ConnectionGeometry
 from OMSimulator.variable import Causality
 
@@ -214,7 +215,15 @@ class ElementIconItem(QGraphicsRectItem):
     self.setZValue(1)
     self.setToolTip(name)
 
-    self._label = QGraphicsSimpleTextItem(name, self)
+    # FMU-backed components show their FMU kind ('me'/'cs'/'me_cs', from the
+    # modelDescription.xml's <ModelExchange>/<CoSimulation> elements) next
+    # to the name -- element.fmu is None if the resource failed to load, in
+    # which case there's nothing to report.
+    labelText = name
+    if isinstance(element, Component) and element.fmu is not None:
+      labelText = f'{name}\n({element.fmu.fmuType})'
+
+    self._label = QGraphicsSimpleTextItem(labelText, self)
     labelFont = QFont()
     labelFont.setPointSizeF(6.5)
     self._label.setFont(labelFont)

@@ -59,7 +59,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QSizePolicy,
     QSplitter,
     QStatusBar,
     QToolBar,
@@ -275,28 +274,24 @@ class MainWindow(QMainWindow):
     self._upAction.setEnabled(False)
     self._upAction.triggered.connect(self._onUpTriggered)
     diagramToolbar.addSeparator()
-    diagramToolbar.addWidget(self._breadcrumbLabel)
 
-    # Simulation Settings + Simulate sit centered in the toolbar (an
-    # expanding spacer on each side of the pair) rather than at either end,
-    # matching where OMEdit's own equivalent icons draw the eye.
-    diagramToolbar.addWidget(self._expandingToolbarSpacer())
+    # Simulation Settings + Simulate are grouped with the other toolbar
+    # controls on the left, ahead of the breadcrumb -- keeps their position
+    # fixed regardless of how long the breadcrumb text grows, and avoids a
+    # button pair floating in an otherwise-empty toolbar.
     settingsAction = diagramToolbar.addAction(_letterIcon('S', '#455a64'), 'Simulation Settings')
     settingsAction.triggered.connect(self._onSimulationSettingsTriggered)
     simulateAction = diagramToolbar.addAction(_arrowIcon('#2e7d32'), 'Simulate')
     simulateAction.triggered.connect(self._onSimulateTriggered)
-    diagramToolbar.addWidget(self._expandingToolbarSpacer())
+    diagramToolbar.addSeparator()
+
+    diagramToolbar.addWidget(self._breadcrumbLabel)
 
     self.addToolBar(diagramToolbar)
 
     self.setStatusBar(QStatusBar(self))
 
     self._buildMenus()
-
-  def _expandingToolbarSpacer(self) -> QWidget:
-    spacer = QWidget(self)
-    spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-    return spacer
 
   def _buildMenus(self) -> None:
     fileMenu = self.menuBar().addMenu('&File')
