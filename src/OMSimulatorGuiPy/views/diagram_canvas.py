@@ -344,6 +344,7 @@ class DiagramView(QGraphicsView):
   addComponentRequested = Signal(QPointF)
   addConnectorRequested = Signal(QPointF)
   elementPropertiesRequested = Signal(object)  # Component: double-clicked on the canvas
+  connectorValueRequested = Signal(str)  # current system's own connector: double-clicked on the canvas
   # Delete key pressed while the cursor is over an element/the current
   # system's own connector -- see keyPressEvent/_deleteUnderCursor. Named
   # by the current level, same as addComponentRequested/addConnectorRequested;
@@ -424,7 +425,27 @@ class DiagramView(QGraphicsView):
     self.scale(factor, factor)
 
   def mouseDoubleClickEvent(self, event) -> None:
-    item = self.itemAt(event.pos())
+    clickedItem = self.itemAt(event.pos())
+    # Radius-based fallback, not just an exact hit -- same reasoning as
+    # mousePressEvent's own use of _portAt: a port's own (tiny) drawn shape
+    # can miss a slightly-imprecise click that's still unambiguously "at"
+    # it, and an unhandled double-click landing on the *connection*
+    # underneath instead falls through to super().mouseDoubleClickEvent(),
+    # whose default QGraphicsView behavior redispatches as a mousePressEvent
+    # -- starting a connection reshape with no matching release ever coming
+    # to close it, corrupting that connection (confirmed via a real repro:
+    # this silently dropped a connection from the canvas, though the model
+    # itself stayed intact).
+    port = clickedItem if isinstance(clickedItem, PortItem) else self._portAt(self.mapToScene(event.pos()))
+    if port is not None and _elementNameForPort(port) == '':
+      # A port on the current system's own boundary (not a child element's
+      # port -- see _elementNameForPort) -- double-click sets a fixed value
+      # for it rather than drilling in/showing element properties, since a
+      # boundary connector has neither.
+      self.connectorValueRequested.emit(str(port.connector.name))
+      return
+
+    item = clickedItem
     while item is not None and not isinstance(item, ElementIconItem):
       item = item.parentItem()
 

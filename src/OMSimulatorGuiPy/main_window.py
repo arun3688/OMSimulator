@@ -72,6 +72,7 @@ from OMSimulator.connection import ConnectionGeometry
 from OMSimulatorGui.dialogs.add_connector_dialog import AddConnectorDialog
 from OMSimulatorGui.dialogs.add_submodel_dialog import AddSubModelDialog
 from OMSimulatorGui.dialogs.add_system_dialog import AddSystemDialog
+from OMSimulatorGui.dialogs.connector_value_dialog import ConnectorValueDialog
 from OMSimulatorGui.dialogs.create_model_dialog import CreateModelDialog
 from OMSimulatorGui.dialogs.element_properties_dialog import ElementPropertiesDialog
 from OMSimulatorGui.dialogs.simulation_settings_dialog import SimulationSettingsDialog
@@ -232,6 +233,7 @@ class MainWindow(QMainWindow):
     self._diagramView.elementPropertiesRequested.connect(self._onCanvasPropertiesRequested)
     self._diagramView.elementDeleteRequested.connect(self._onCanvasElementDeleteRequested)
     self._diagramView.connectorDeleteRequested.connect(self._onCanvasConnectorDeleteRequested)
+    self._diagramView.connectorValueRequested.connect(self._onCanvasConnectorValueRequested)
     # Fits/centers the empty default canvas immediately -- without this,
     # DiagramView.setSystem() (the only place that ever calls setSceneRect
     # and fitInView) never runs until a model is actually loaded, so the
@@ -793,6 +795,31 @@ class MainWindow(QMainWindow):
     if not path:
       return
     self._deleteCref([*path, connectorName], connectorName)
+
+  def _onCanvasConnectorValueRequested(self, connectorName: str) -> None:
+    path = self._diagramLevelPath()
+    if not path:
+      return  # the model level's own root box has no addressable connectors
+    system = self._diagramStack[-1][0]
+    connector = next((c for c in system.connectors if str(c.name) == connectorName), None)
+    if connector is None:
+      return
+    cref = CRef(*path, connectorName)
+    try:
+      currentValue = self._ssp.getValue(cref)
+    except Exception:
+      currentValue = None
+
+    dialog = ConnectorValueDialog(connector, currentValue, self)
+    if dialog.exec() != QDialog.DialogCode.Accepted:
+      return
+    newValue = dialog.value()
+    if newValue is None or newValue == currentValue:
+      return  # untouched, left blank (backend already defaults to 0), or not editable
+    try:
+      self._ssp.setValue(cref, newValue)
+    except Exception as e:
+      QMessageBox.critical(self, 'Set Value failed', str(e))
 
   def _onRenameRequested(self, node) -> None:
     if not self._activateModelForNode(node):
