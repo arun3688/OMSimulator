@@ -65,6 +65,12 @@ _FALLBACK_CELL_H = 60.0
 _FALLBACK_ELEMENT_W = 50.0
 _FALLBACK_ELEMENT_H = 35.0
 _BOUNDARY_MARGIN = 40.0
+# A port that already has a connection sits exactly where that connection's
+# own (wider, 6-unit) hit-tolerance shape also matches -- this needs to be
+# at least that generous so starting a *second* connection from an
+# already-wired port doesn't lose to reshaping the existing one. See
+# DiagramView._portAt.
+_PORT_HIT_RADIUS = 8.0
 
 
 def _assignFallbackConnectorGeometry(connectors) -> None:
@@ -450,6 +456,28 @@ class DiagramView(QGraphicsView):
         return item
     return None
 
+  def _portAt(self, scenePos) -> PortItem | None:
+    '''Finds the nearest PortItem within _PORT_HIT_RADIUS of scenePos, not
+    just an exact hit on its (tiny, ~3-unit) drawn triangle. A port that
+    already has a connection sits exactly where that connection's own much
+    more forgiving hit-tolerance shape also matches (see _connectionAt) --
+    without this, a slightly-off click meant to start a *second* connection
+    from an already-wired port would land on the existing connection
+    instead (grabbing it to reshape) well before it could ever miss the
+    port widely enough to matter. Only ever used to decide whether to start
+    a *new* connection drag -- exact-hit itemAt() is still what governs
+    Shift+drag-to-move-a-port, which isn't the ambiguity this resolves.'''
+    best = None
+    bestDist = _PORT_HIT_RADIUS
+    for item in self._scene.items():
+      if isinstance(item, PortItem):
+        pos = item.scenePos()
+        dist = math.hypot(pos.x() - scenePos.x(), pos.y() - scenePos.y())
+        if dist <= bestDist:
+          best = item
+          bestDist = dist
+    return best
+
   def mousePressEvent(self, event) -> None:
     # Explicit rather than relying on QWidget's own click-to-focus: several
     # branches below return early without calling super(), which would
@@ -462,9 +490,11 @@ class DiagramView(QGraphicsView):
       # over via normal Qt item dragging); plain drag starts a connection.
       super().mousePressEvent(event)
       return
-    if isinstance(item, PortItem):
-      self._connectDragPort = item
-      startPos = item.scenePos()
+
+    port = item if isinstance(item, PortItem) else self._portAt(self.mapToScene(event.pos()))
+    if port is not None:
+      self._connectDragPort = port
+      startPos = port.scenePos()
       self._connectDragPoints = [startPos]
       self._connectDragAxis = None
       self._connectDragLine = QGraphicsPathItem()

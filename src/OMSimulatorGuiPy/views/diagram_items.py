@@ -395,7 +395,7 @@ class SystemBoundaryItem(QGraphicsRectItem):
 
 
 _CONNECTION_HIT_MARGIN = 6.0  # widened click/hover tolerance around the (thin) drawn line
-_WAYPOINT_RADIUS = 2.5
+_WAYPOINT_RADIUS = 0.5  # drawn circle around each interior waypoint, also the grab target
 _MOVE_THRESHOLD = 0.5  # below this, a press+release is a no-op click, not a drag
 
 
@@ -489,7 +489,7 @@ class ConnectionItem(QGraphicsPathItem):
     else:
       self._points = defaultRoute(startPos, endPos)
 
-    self.setPen(QPen(QColor(60, 60, 60), 1.5))
+    self.setPen(QPen(QColor(60, 60, 60), 0.5))
     self.setZValue(0)
     self.setAcceptHoverEvents(True)
     self.setToolTip(f'{connection.startElement}.{connection.startConnector} -> '
