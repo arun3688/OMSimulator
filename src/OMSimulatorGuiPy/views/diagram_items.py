@@ -54,6 +54,12 @@ from OMSimulator.connection import ConnectionGeometry
 from OMSimulator.variable import Causality
 
 PORT_SIZE = 3.0
+# Top-level system connectors (SystemBoundaryItem's own ports) are drawn
+# bigger than an FMU component's own ports -- there are usually only a
+# handful of them and they're the ones most often dragged from repeatedly
+# (fan-out to several internal inputs), so a larger, easier-to-grab target
+# is worth the extra visual weight; component ports stay at PORT_SIZE.
+BOUNDARY_PORT_SIZE = 6.0
 
 
 def _arrowPolygon(size: float) -> QPolygonF:
@@ -96,8 +102,8 @@ class PortItem(QGraphicsPolygonItem):
   the owning scene can rebuild -- connections aren't live-tracked mid-drag.
   '''
 
-  def __init__(self, connector, localRect: QRectF, parent: QGraphicsItem, onMoved=None):
-    super().__init__(_arrowPolygon(PORT_SIZE), parent)
+  def __init__(self, connector, localRect: QRectF, parent: QGraphicsItem, onMoved=None, size: float = PORT_SIZE):
+    super().__init__(_arrowPolygon(size), parent)
     self.connector = connector
     self._localRect = localRect
     self._onMoved = onMoved
@@ -144,13 +150,13 @@ class PortItem(QGraphicsPolygonItem):
 _WIREABLE_CAUSALITIES = (Causality.input, Causality.output)
 
 
-def _createPorts(hostItem: QGraphicsItem, connectors, localRect: QRectF, onMoved=None) -> dict:
+def _createPorts(hostItem: QGraphicsItem, connectors, localRect: QRectF, onMoved=None, size: float = PORT_SIZE) -> dict:
   '''Only input/output connectors are drawn as ports -- parameters (and
   calculatedParameter/local/independent) aren't valid connection endpoints
   (Connection.is_validConnection never accepts them), they're set via the
   properties dialog (M5) instead.'''
   wireable = [c for c in connectors if c.getCausality() in _WIREABLE_CAUSALITIES]
-  return {str(connector.name): PortItem(connector, localRect, hostItem, onMoved) for connector in wireable}
+  return {str(connector.name): PortItem(connector, localRect, hostItem, onMoved, size=size) for connector in wireable}
 
 
 def _portScenePos(hostItem: QGraphicsItem, ports: dict, connectorName: str) -> QPointF | None:
@@ -388,7 +394,7 @@ class SystemBoundaryItem(QGraphicsRectItem):
     self.setZValue(-1)
 
     localRect = QRectF(0, 0, sceneRect.width(), sceneRect.height())
-    self.ports = _createPorts(self, system.connectors, localRect, onMoved)
+    self.ports = _createPorts(self, system.connectors, localRect, onMoved, size=BOUNDARY_PORT_SIZE)
 
   def portScenePos(self, connectorName: str) -> QPointF | None:
     return _portScenePos(self, self.ports, connectorName)
