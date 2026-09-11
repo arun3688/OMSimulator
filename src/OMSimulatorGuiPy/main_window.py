@@ -230,6 +230,8 @@ class MainWindow(QMainWindow):
     self._diagramView.addComponentRequested.connect(self._onCanvasAddComponentRequested)
     self._diagramView.addConnectorRequested.connect(self._onCanvasAddConnectorRequested)
     self._diagramView.elementPropertiesRequested.connect(self._onCanvasPropertiesRequested)
+    self._diagramView.elementDeleteRequested.connect(self._onCanvasElementDeleteRequested)
+    self._diagramView.connectorDeleteRequested.connect(self._onCanvasConnectorDeleteRequested)
     # Fits/centers the empty default canvas immediately -- without this,
     # DiagramView.setSystem() (the only place that ever calls setSceneRect
     # and fitInView) never runs until a model is actually loaded, so the
@@ -764,14 +766,33 @@ class MainWindow(QMainWindow):
   def _onDeleteRequested(self, node) -> None:
     if not self._activateModelForNode(node):
       return
-    if QMessageBox.question(self, 'Delete', f'Delete "{node.label}"?') != QMessageBox.StandardButton.Yes:
+    self._deleteCref(self._crefPath(node), node.label)
+
+  def _deleteCref(self, path: list[str], displayName: str) -> None:
+    '''Shared by tree-driven deletes (Delete key or context menu, via
+    _onDeleteRequested) and canvas-driven ones (_onCanvasElementDeleteRequested/
+    _onCanvasConnectorDeleteRequested) -- both just need a cref path and a
+    name to show in the confirmation prompt.'''
+    if QMessageBox.question(self, 'Delete', f'Delete "{displayName}"?') != QMessageBox.StandardButton.Yes:
       return
     try:
-      self._ssp.delete(CRef(*self._crefPath(node)))
+      self._ssp.delete(CRef(*path))
     except Exception as e:
       QMessageBox.critical(self, 'Delete failed', str(e))
       return
     self._onModelChanged()
+
+  def _onCanvasElementDeleteRequested(self, elementName: str) -> None:
+    path = self._diagramLevelPath()
+    if not path:
+      return  # the model level's own root box isn't a deletable element
+    self._deleteCref([*path, elementName], elementName)
+
+  def _onCanvasConnectorDeleteRequested(self, connectorName: str) -> None:
+    path = self._diagramLevelPath()
+    if not path:
+      return
+    self._deleteCref([*path, connectorName], connectorName)
 
   def _onRenameRequested(self, node) -> None:
     if not self._activateModelForNode(node):

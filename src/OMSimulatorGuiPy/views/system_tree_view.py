@@ -37,7 +37,7 @@ owns the actual System/SSP API calls and the dialogs, keeping this view
 free of editing-API specifics.
 '''
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QMenu, QTreeView
 
 from OMSimulatorGui.models.system_tree_model import (
@@ -46,6 +46,8 @@ from OMSimulatorGui.models.system_tree_model import (
     KIND_CONNECTOR,
     KIND_SYSTEM,
 )
+
+_DELETABLE_KINDS = (KIND_SYSTEM, KIND_COMPONENT, KIND_COMPONENT_TABLE, KIND_CONNECTOR)
 
 
 class SystemTreeView(QTreeView):
@@ -69,6 +71,18 @@ class SystemTreeView(QTreeView):
     node = self.model().nodeFromIndex(index)
     if node is not None and node.kind == KIND_COMPONENT:
       self.propertiesRequested.emit(node)
+
+  def keyPressEvent(self, event) -> None:
+    if event.key() == Qt.Key.Key_Delete:
+      node = self.model().nodeFromIndex(self.currentIndex())
+      # Same eligibility as the context menu's own "Delete" action -- see
+      # _onContextMenuRequested (a top-level system can't delete itself).
+      if node is not None and node.kind in _DELETABLE_KINDS and not (
+          node.kind == KIND_SYSTEM and self.model().isTopLevelSystem(node)):
+        self.deleteRequested.emit(node)
+        event.accept()
+        return
+    super().keyPressEvent(event)
 
   def _onContextMenuRequested(self, pos) -> None:
     index = self.indexAt(pos)

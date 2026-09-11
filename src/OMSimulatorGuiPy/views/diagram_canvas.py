@@ -338,6 +338,12 @@ class DiagramView(QGraphicsView):
   addComponentRequested = Signal(QPointF)
   addConnectorRequested = Signal(QPointF)
   elementPropertiesRequested = Signal(object)  # Component: double-clicked on the canvas
+  # Delete key pressed while the cursor is over an element/the current
+  # system's own connector -- see keyPressEvent/_deleteUnderCursor. Named
+  # by the current level, same as addComponentRequested/addConnectorRequested;
+  # MainWindow resolves the full cref from self._diagramLevelPath().
+  elementDeleteRequested = Signal(str)
+  connectorDeleteRequested = Signal(str)
 
   def __init__(self, parent=None):
     super().__init__(parent)
@@ -346,6 +352,16 @@ class DiagramView(QGraphicsView):
     self.setRenderHint(QPainter.RenderHint.Antialiasing)
     self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
     self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+    # Needed for the Delete-key shortcut below to ever reach this widget --
+    # QGraphicsView doesn't accept keyboard focus by default.
+    self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    # ...and for _lastHoverPos below to track the mouse even when no button
+    # is held (mouseMoveEvent otherwise only fires during an active drag).
+    # QAbstractScrollArea delivers real mouse events via the viewport
+    # widget, not the QGraphicsView frame itself -- both need tracking on.
+    self.setMouseTracking(True)
+    self.viewport().setMouseTracking(True)
+    self._lastHoverPos: QPointF | None = None
 
     # _UNSET, not None: setSystem(None) is exactly what shows the empty
     # default canvas (no model loaded/created yet), and it still needs its
@@ -435,6 +451,11 @@ class DiagramView(QGraphicsView):
     return None
 
   def mousePressEvent(self, event) -> None:
+    # Explicit rather than relying on QWidget's own click-to-focus: several
+    # branches below return early without calling super(), which would
+    # otherwise skip the base implementation's own focus handling -- and
+    # the Delete-key shortcut needs this view to actually hold focus.
+    self.setFocus(Qt.FocusReason.MouseFocusReason)
     item = self.itemAt(event.pos())
     if isinstance(item, PortItem) and event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
       # Shift+drag repositions the port itself (PortItem.ItemIsMovable takes
@@ -500,6 +521,7 @@ class DiagramView(QGraphicsView):
     self._connectDragLine.setPath(path)
 
   def mouseMoveEvent(self, event) -> None:
+    self._lastHoverPos = event.pos()
     if self._connectDragPort is not None:
       self._updateConnectDragPreview(self.mapToScene(event.pos()))
       event.accept()
@@ -538,6 +560,61 @@ class DiagramView(QGraphicsView):
       event.accept()
       return
     super().mouseReleaseEvent(event)
+
+  def keyPressEvent(self, event) -> None:
+    if event.key() == Qt.Key.Key_Delete and self._deleteUnderCursor():
+      event.accept()
+      return
+    super().keyPressEvent(event)
+
+  def _deleteUnderCursor(self) -> bool:
+    '''Resolves whatever's under the *cursor* (not a tracked "selection" --
+    this app deliberately never made icons/ports selectable, see
+    ElementIconItem's own docstring) the same way contextMenuEvent already
+    does, and emits the matching delete-request signal. Uses the last
+    hover position tracked by mouseMoveEvent rather than QCursor.pos() --
+    both name "wherever the mouse currently is", but the tracked position
+    stays reliable under the offscreen platform (used by this project's
+    headless tests) and works the same regardless of platform quirks
+    around querying the real OS cursor position.
+
+    A port that belongs to a child element (its own FMU-derived connector,
+    not independently deletable -- only the whole component can be) is
+    deliberately ignored rather than falling through to deleting that
+    child element instead.'''
+    if self._lastHoverPos is None:
+      return False
+    viewportPos = self._lastHoverPos
+    if not self.viewport().rect().contains(viewportPos):
+      return False
+
+    connectionItem = self._connectionAt(self.mapToScene(viewportPos))
+    if connectionItem is not None:
+      connection = connectionItem.connection
+      self.connectionDeleteRequested.emit(
+          str(connection.startElement), str(connection.startConnector),
+          str(connection.endElement), str(connection.endConnector))
+      return True
+
+    item = self.itemAt(viewportPos)
+
+    port = item
+    while port is not None and not isinstance(port, PortItem):
+      port = port.parentItem()
+    if port is not None:
+      if _elementNameForPort(port) == '':
+        self.connectorDeleteRequested.emit(str(port.connector.name))
+        return True
+      return False
+
+    element = item
+    while element is not None and not isinstance(element, ElementIconItem):
+      element = element.parentItem()
+    if element is not None:
+      self.elementDeleteRequested.emit(element.name)
+      return True
+
+    return False
 
   def contextMenuEvent(self, event) -> None:
     scenePos = self.mapToScene(event.pos())
